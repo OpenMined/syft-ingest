@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -10,18 +12,48 @@ from loguru import logger
 if TYPE_CHECKING:
     from syft_ingest.core.models import ContentItem, Corpus
 
+# Map platform metadata to site domains
+_PLATFORM_SITES = {
+    "facebook": "facebook.com",
+    "instagram": "instagram.com",
+    "threads": "threads.net",
+}
+
+# Map platform metadata to source_type labels
+_PLATFORM_SOURCE_TYPES = {
+    "facebook": "social_media_post",
+    "instagram": "social_media_post",
+}
+
+
+def _stable_id(item: ContentItem) -> str:
+    """Generate a stable ID from URL + source + content hash."""
+    content_hash = item.metadata.get("content_hash", "")
+    key = f"{item.url or ''}:{item.source_type.value}:{content_hash}"
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()[:32]
+
 
 def _item_to_dict(item: ContentItem) -> dict:
     """Map ContentItem to JSONL-compatible dict matching syft-influencer schema."""
+    platform = item.metadata.get("platform", "")
+    published_at_str = item.published_at.isoformat() if item.published_at else ""
+    excerpt = item.text.split("\n\n", 1)[-1][:240] if item.text else ""
+
     return {
+        "id": _stable_id(item),
         "text": item.text,
         "title": item.title,
         "url": item.url or "",
         "source": item.source_type.value,
-        "source_type": item.metadata.get("source_type_label", ""),
+        "source_type": item.metadata.get(
+            "source_type_label", _PLATFORM_SOURCE_TYPES.get(platform, "")
+        ),
         "author": item.author,
-        "site": item.metadata.get("site", ""),
+        "site": item.metadata.get("site", _PLATFORM_SITES.get(platform, "")),
+        "published_at": published_at_str,
         "tags": item.metadata.get("tags", []),
+        "excerpt": excerpt,
+        "ingested_at": datetime.now(UTC).isoformat(),
         "metadata": item.metadata,
     }
 
