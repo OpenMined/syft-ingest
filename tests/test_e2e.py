@@ -37,6 +37,13 @@ def test_e2e_facebook_gather_and_export_jsonl(fb_export_path, output_dir):
         assert record["metadata"]["content_hash"]
         # Encoding fixed
         assert "\u00e2\u0080\u0099" not in record["text"]
+        # Export fields for RAG
+        assert record["id"]  # stable ID
+        assert record["site"] == "facebook.com"
+        assert record["source_type"] == "social_media_post"
+        assert record["published_at"]  # ISO 8601
+        assert record["excerpt"]  # first 280 chars of raw text
+        assert record["ingested_at"]  # timestamp
 
 
 def test_e2e_instagram_gather_and_export_jsonl(ig_export_path, output_dir):
@@ -62,6 +69,13 @@ def test_e2e_instagram_gather_and_export_jsonl(ig_export_path, output_dir):
         assert record["metadata"]["platform"] == "instagram"
         assert record["metadata"]["content_hash"]
         assert record["metadata"]["cross_post_source"] == "FB"
+        # Export fields for RAG
+        assert record["id"]
+        assert record["site"] == "instagram.com"
+        assert record["source_type"] == "social_media_post"
+        assert record["published_at"]
+        assert record["excerpt"]
+        assert record["ingested_at"]
 
 
 def test_e2e_combined_gather(fb_export_path, ig_export_path, output_dir):
@@ -144,6 +158,27 @@ def test_e2e_export_text(fb_export_path, output_dir):
     assert len(txt_files) == len(corpus.all_items())
     # Filenames should not collide (indexed)
     assert len(txt_files) == len(set(f.name for f in txt_files))
+
+
+def test_e2e_stable_ids_are_deterministic_and_unique(fb_export_path, output_dir):
+    if not fb_export_path.exists():
+        pytest.skip("Test data not available")
+
+    # Export twice, IDs should be identical
+    file1 = output_dir / "run1.jsonl"
+    file2 = output_dir / "run2.jsonl"
+    for f in [file1, file2]:
+        corpus = syft_ingest.gather(
+            "Test", sources=["local"], local_dirs=[str(fb_export_path)]
+        )
+        corpus.export("jsonl", output=str(f))
+
+    ids1 = [json.loads(line)["id"] for line in file1.read_text().strip().splitlines()]
+    ids2 = [json.loads(line)["id"] for line in file2.read_text().strip().splitlines()]
+    assert ids1 == ids2, "IDs should be deterministic across runs"
+
+    # All IDs should be unique
+    assert len(ids1) == len(set(ids1)), "IDs should be unique"
 
 
 def test_e2e_unknown_source_does_not_crash():
