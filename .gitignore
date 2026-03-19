@@ -1,0 +1,13 @@
+.docs/
+.claude/
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+.venv/
+.env
+*.DS_Store
+.research
+data/
+outputs/

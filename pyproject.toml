@@ -1,0 +1,53 @@
+[project]
+name = "syft-ingest"
+version = "0.1.0"
+description = "Content aggregator — person-centric or topic-centric. Scrape, normalize, deliver."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic>=2.0",
+    "yt-dlp>=2024.0",
+    "loguru>=0.7",
+]
+
+[project.optional-dependencies]
+web = ["trafilatura>=1.0", "beautifulsoup4>=4.12"]
+arxiv = ["arxiv>=2.0", "pymupdf>=1.23"]
+podcast = ["openai-whisper>=20230918"]
+rag = ["fastembed>=0.3", "langchain-text-splitters>=0.2"]
+qdrant = ["syft-ingest[rag]", "qdrant-client>=1.9"]
+weaviate = ["syft-ingest[rag]", "weaviate-client>=4.0"]
+chroma = ["syft-ingest[rag]", "chromadb>=0.4"]
+openai-embeddings = ["openai>=1.0"]
+notebooklm = ["notebooklm-py>=0.1"]
+all = [
+    "syft-ingest[web]",
+    "syft-ingest[arxiv]",
+    "syft-ingest[podcast]",
+    "syft-ingest[qdrant]",
+    "syft-ingest[chroma]",
+    "syft-ingest[weaviate]",
+    "syft-ingest[openai-embeddings]",
+    "syft-ingest[notebooklm]",
+]
+
+[project.scripts]
+syft-ingest = "syft_ingest.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "pre-commit>=4.0",
+    "pytest>=9.0.2",
+    "ruff>=0.12.0",
+]
+
+[tool.ruff.lint]
+extend-select = ["I"]
+
+[tool.ruff.lint.per-file-ignores]
+"**/__init__.py" = ["F401"]
