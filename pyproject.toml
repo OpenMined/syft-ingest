@@ -16,6 +16,11 @@ web = ["trafilatura>=1.0", "beautifulsoup4>=4.12"]
 arxiv = ["arxiv>=2.0", "pymupdf>=1.23"]
 podcast = ["openai-whisper>=20230918"]
 rag = ["fastembed>=0.3", "langchain-text-splitters>=0.2"]
+multimodal = [
+    "opencv-python-headless>=4.10",
+    "Pillow>=10.0",
+    "sentence-transformers>=3.0",
+]
 qdrant = ["syft-ingest[rag]", "qdrant-client>=1.9"]
 weaviate = ["syft-ingest[rag]", "weaviate-client>=4.0"]
 chroma = ["syft-ingest[rag]", "chromadb>=0.4"]
@@ -25,6 +30,7 @@ all = [
     "syft-ingest[web]",
     "syft-ingest[arxiv]",
     "syft-ingest[podcast]",
+    "syft-ingest[multimodal]",
     "syft-ingest[qdrant]",
     "syft-ingest[chroma]",
     "syft-ingest[weaviate]",

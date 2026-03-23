@@ -38,6 +38,13 @@ def _item_to_dict(item: ContentItem) -> dict:
     platform = item.metadata.get("platform", "")
     published_at_str = item.published_at.isoformat() if item.published_at else ""
     excerpt = item.text.split("\n\n", 1)[-1][:240] if item.text else ""
+    tags = item.metadata.get("tags", [])
+    if not tags:
+        post_repr = item.metadata.get("post_representation", {})
+        if isinstance(post_repr, dict):
+            candidate_tags = post_repr.get("tags", [])
+            if isinstance(candidate_tags, list):
+                tags = candidate_tags
 
     return {
         "id": _stable_id(item),
@@ -51,7 +58,7 @@ def _item_to_dict(item: ContentItem) -> dict:
         "author": item.author,
         "site": item.metadata.get("site", _PLATFORM_SITES.get(platform, "")),
         "published_at": published_at_str,
-        "tags": item.metadata.get("tags", []),
+        "tags": tags,
         "excerpt": excerpt,
         "ingested_at": datetime.now(UTC).isoformat(),
         "metadata": item.metadata,
