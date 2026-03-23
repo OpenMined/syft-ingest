@@ -13,10 +13,6 @@ from syft_ingest.sources._meta_utils import (
     extract_mentions,
 )
 
-DEFAULT_MANIFEST = Path(
-    "../syft-influencer/data/creators/jen-lazzari/paintedwildflower-fbpage/local-sync/manifests/posts_local_manifest.jsonl"
-)
-
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -24,7 +20,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--manifest-jsonl",
-        default=str(DEFAULT_MANIFEST),
+        required=True,
         help="Path to posts_local_manifest.jsonl",
     )
     parser.add_argument(

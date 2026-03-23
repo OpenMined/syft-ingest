@@ -47,19 +47,29 @@ def _find_meta_post_files(directory: Path) -> list[Path]:
 def _looks_like_brightdata_row(row: Any) -> bool:
     if not isinstance(row, dict):
         return False
-    has_post_like_keys = any(
-        key in row
-        for key in (
-            "post_id",
-            "url",
-            "date_posted",
-            "page_name",
-            "content",
-            "attachments",
-        )
+
+    def _nonempty_scalar(value: Any) -> bool:
+        if isinstance(value, str):
+            return bool(value.strip())
+        return isinstance(value, (int, float))
+
+    has_identity = any(
+        _nonempty_scalar(row.get(key))
+        for key in ("post_id", "url", "post_url", "permalink", "date_posted")
     )
-    has_attachments = isinstance(row.get("attachments"), list)
-    return has_post_like_keys and has_attachments
+    has_text_payload = any(
+        isinstance(row.get(key), str) and row.get(key).strip()
+        for key in ("content", "text", "message", "caption", "description", "title")
+    )
+    attachments = row.get("attachments")
+    has_attachment_payload = isinstance(attachments, list) and bool(attachments)
+    has_top_level_media_payload = any(
+        _is_http_url(row.get(key))
+        for key in ("post_image", "post_external_image", "video_url")
+    )
+    return has_identity and (
+        has_text_payload or has_attachment_payload or has_top_level_media_payload
+    )
 
 
 def _is_brightdata_export_file(path: Path) -> bool:
@@ -71,18 +81,12 @@ def _is_brightdata_export_file(path: Path) -> bool:
         return False
     if not isinstance(raw, list) or not raw:
         return False
-    first_obj = next((item for item in raw if isinstance(item, dict)), None)
-    return _looks_like_brightdata_row(first_obj)
+    return any(_looks_like_brightdata_row(item) for item in raw)
 
 
 def _find_brightdata_files(directory: Path) -> list[Path]:
-    candidates: set[Path] = set()
-    for pattern in (
-        "**/*brightdata*.json",
-        "**/apify-dataset_facebook-posts-scraper*.json",
-    ):
-        candidates.update(directory.glob(pattern))
-    return sorted(path for path in candidates if _is_brightdata_export_file(path))
+    json_files = sorted(directory.glob("**/*.json"))
+    return [path for path in json_files if _is_brightdata_export_file(path)]
 
 
 def is_facebook_export(directory: Path) -> bool:
@@ -361,6 +365,8 @@ def _build_meta_content_item(post: dict[str, Any], author: str) -> ContentItem |
         metadata={
             "platform": "facebook",
             "extractor": "meta_export",
+            "tags": tags,
+            "mentions": mentions,
             "content_hash": chash,
             "post_ref": {"platform": "facebook", "post_id": "", "url": url or ""},
             "post_representation": post_representation,
@@ -533,6 +539,8 @@ def _build_brightdata_content_item(
             "platform": "facebook",
             "extractor": "brightdata",
             "source_type_label": "social_media_post",
+            "tags": tags,
+            "mentions": mentions,
             "content_hash": stable_hash,
             "post_ref": {
                 "platform": "facebook",
@@ -578,13 +586,14 @@ def _parse_brightdata_export_file(post_file: Path, *, author: str) -> tuple[list
 
     items: list[ContentItem] = []
     skipped_empty = 0
+    file_token = sha256(str(post_file).encode("utf-8")).hexdigest()[:12]
     for index, post in enumerate(posts, start=1):
         if not isinstance(post, dict):
             continue
         item = _build_brightdata_content_item(
             post,
             author=author,
-            fallback_post_id=f"brightdata-{index}",
+            fallback_post_id=f"brightdata-{file_token}-{index}",
         )
         if item is None:
             skipped_empty += 1

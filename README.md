@@ -167,12 +167,14 @@ Enable summarization only when needed:
 
 ```bash
 uv run python scripts/embed_posts_multimodal.py \
+  --manifest-jsonl ../syft-influencer/data/creators/jen-lazzari/paintedwildflower-fbpage/local-sync/manifests/posts_local_manifest.jsonl \
   --summarize-long-text \
   --summary-min-chars 900 \
   --summary-max-chars 420
 
 # Optional: include tags directly in embedding text (default is metadata-only tags)
 uv run python scripts/embed_posts_multimodal.py \
+  --manifest-jsonl ../syft-influencer/data/creators/jen-lazzari/paintedwildflower-fbpage/local-sync/manifests/posts_local_manifest.jsonl \
   --include-tags-in-embedding-text
 ```
 

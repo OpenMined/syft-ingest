@@ -250,13 +250,21 @@ def embed_records_with_clip(
 
     model = SentenceTransformer(model_name)
 
-    images = [Image.open(r["image_path"]).convert("RGB") for r in records]
-    image_vectors = model.encode(
-        images,
-        batch_size=batch_size,
-        convert_to_numpy=True,
-        normalize_embeddings=True,
-    )
+    images = []
+    for record in records:
+        with Image.open(record["image_path"]) as image:
+            images.append(image.convert("RGB"))
+
+    try:
+        image_vectors = model.encode(
+            images,
+            batch_size=batch_size,
+            convert_to_numpy=True,
+            normalize_embeddings=True,
+        )
+    finally:
+        for image in images:
+            image.close()
 
     text_indices = [i for i, record in enumerate(records) if record["transcript"]]
     text_lookup: dict[int, list[float]] = {}
