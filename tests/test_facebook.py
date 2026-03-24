@@ -82,7 +82,9 @@ def test_is_facebook_export_detects_brightdata_json(tmp_path):
     assert is_facebook_export(tmp_path)
 
 
-def test_is_facebook_export_detects_brightdata_if_first_row_has_no_attachments(tmp_path):
+def test_is_facebook_export_detects_brightdata_if_first_row_has_no_attachments(
+    tmp_path,
+):
     brightdata = [
         {
             "post_id": "111",
@@ -122,9 +124,7 @@ def test_is_facebook_export_ignores_meta_like_rows_with_empty_attachments(tmp_pa
             "timestamp": "2025-08-22T18:04:35.000Z",
         }
     ]
-    (tmp_path / "brightdata-sample.json").write_text(
-        json.dumps(rows), encoding="utf-8"
-    )
+    (tmp_path / "brightdata-sample.json").write_text(json.dumps(rows), encoding="utf-8")
     assert not is_facebook_export(tmp_path)
 
 
@@ -140,9 +140,7 @@ def test_is_facebook_export_detects_brightdata_top_level_media_only_row(tmp_path
             "post_image": "https://scontent-ord5-1.xx.fbcdn.net/example/thumb.jpg",
         }
     ]
-    (tmp_path / "brightdata-sample.json").write_text(
-        json.dumps(rows), encoding="utf-8"
-    )
+    (tmp_path / "brightdata-sample.json").write_text(json.dumps(rows), encoding="utf-8")
     assert is_facebook_export(tmp_path)
 
 

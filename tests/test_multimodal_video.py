@@ -37,7 +37,9 @@ def test_transcript_text_near_timestamp_joins_overlaps():
         TranscriptSegment(start_seconds=1.0, end_seconds=3.0, text="world"),
         TranscriptSegment(start_seconds=8.0, end_seconds=9.0, text="ignored"),
     ]
-    text = transcript_text_near_timestamp(segments, timestamp_seconds=2.0, window_seconds=4.0)
+    text = transcript_text_near_timestamp(
+        segments, timestamp_seconds=2.0, window_seconds=4.0
+    )
     assert text == "hello world"
 
 

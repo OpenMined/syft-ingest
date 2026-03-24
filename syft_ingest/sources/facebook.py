@@ -167,7 +167,9 @@ def _guess_media_type(url: str, source_field: str) -> str:
     lower_field = source_field.lower()
     if "video_url" in lower_field:
         return "video"
-    if any(token in lower_field for token in ("thumbnail", "image", "photo", "picture")):
+    if any(
+        token in lower_field for token in ("thumbnail", "image", "photo", "picture")
+    ):
         return "image"
 
     parsed = urlparse(url)
@@ -267,7 +269,9 @@ def _build_post_representation(
 
 def _select_better_item(current: ContentItem, candidate: ContentItem) -> ContentItem:
     """Keep richer item when deduplicating by post ID/URL."""
-    current_media = len(current.metadata.get("post_representation", {}).get("media", []))
+    current_media = len(
+        current.metadata.get("post_representation", {}).get("media", [])
+    )
     candidate_media = len(
         candidate.metadata.get("post_representation", {}).get("media", [])
     )
@@ -552,7 +556,9 @@ def _build_brightdata_content_item(
     )
 
 
-def _parse_meta_export_file(post_file: Path, *, author: str) -> tuple[list[ContentItem], int, int]:
+def _parse_meta_export_file(
+    post_file: Path, *, author: str
+) -> tuple[list[ContentItem], int, int]:
     with post_file.open("r", encoding="utf-8") as f:
         posts = json.load(f)
     posts = fix_meta_encoding_recursive(posts)
@@ -576,7 +582,9 @@ def _parse_meta_export_file(post_file: Path, *, author: str) -> tuple[list[Conte
     return items, skipped_no_text, skipped_bare_url
 
 
-def _parse_brightdata_export_file(post_file: Path, *, author: str) -> tuple[list[ContentItem], int]:
+def _parse_brightdata_export_file(
+    post_file: Path, *, author: str
+) -> tuple[list[ContentItem], int]:
     with post_file.open("r", encoding="utf-8") as f:
         posts = json.load(f)
     posts = fix_meta_encoding_recursive(posts)
@@ -652,7 +660,9 @@ def parse_facebook_export(export_dir: Path, *, author: str) -> list[ContentItem]
     for post_file in brightdata_files:
         logger.info(f"Parsing {post_file.name} (Bright Data)")
         try:
-            items, skipped_empty = _parse_brightdata_export_file(post_file, author=author)
+            items, skipped_empty = _parse_brightdata_export_file(
+                post_file, author=author
+            )
         except (json.JSONDecodeError, UnicodeDecodeError) as e:
             logger.error(f"Skipping {post_file}: failed to parse JSON: {e}")
             continue

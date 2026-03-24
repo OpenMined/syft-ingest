@@ -169,7 +169,9 @@ def load_records(path: Path) -> list[dict[str, Any]]:
                 continue
 
             author = str(row.get("page_name") or "").strip()
-            title = derive_title(text) if text else f"Facebook post {post_id or 'unknown'}"
+            title = (
+                derive_title(text) if text else f"Facebook post {post_id or 'unknown'}"
+            )
             tags = _normalize_tags(row.get("tags"), text)
             mentions = extract_mentions(text)
             published_at = str(row.get("date_posted") or "").strip()

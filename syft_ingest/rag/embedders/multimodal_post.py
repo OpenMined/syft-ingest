@@ -47,7 +47,9 @@ def simple_summarize_text(
     if len(normalized) <= max_chars:
         return normalized
 
-    parts = [part.strip() for part in _SENTENCE_SPLIT_RE.split(normalized) if part.strip()]
+    parts = [
+        part.strip() for part in _SENTENCE_SPLIT_RE.split(normalized) if part.strip()
+    ]
     if not parts:
         return normalized[:max_chars].rstrip()
 
