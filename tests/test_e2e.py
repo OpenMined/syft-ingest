@@ -46,6 +46,50 @@ def test_e2e_facebook_gather_and_export_jsonl(fb_export_path, output_dir):
         assert record["ingested_at"]  # timestamp
 
 
+def test_e2e_brightdata_facebook_gather_and_export_jsonl(tmp_path, output_dir):
+    brightdata_dir = tmp_path / "brightdata-fb"
+    brightdata_dir.mkdir(parents=True, exist_ok=True)
+    brightdata_payload = [
+        {
+            "post_id": "122243006504090679",
+            "url": "https://www.facebook.com/reel/1378171301018195/",
+            "date_posted": "2025-08-22T18:04:35.000Z",
+            "page_name": "Painted Wildflowers",
+            "content": "Easy flower tutorial #watercolor",
+            "attachments": [
+                {
+                    "video_url": "https://video-ord5-3.xx.fbcdn.net/example/video.mp4",
+                    "thumbnail_url": (
+                        "https://scontent-ord5-1.xx.fbcdn.net/example/thumb.jpg"
+                    ),
+                }
+            ],
+        }
+    ]
+    (brightdata_dir / "brightdata-sample.json").write_text(
+        json.dumps(brightdata_payload), encoding="utf-8"
+    )
+
+    output_file = output_dir / "fb-brightdata.jsonl"
+    corpus = syft_ingest.gather(
+        "Syft Influencer Test",
+        sources=["local"],
+        local_dirs=[str(brightdata_dir)],
+    )
+    corpus.export("jsonl", output=str(output_file))
+
+    lines = output_file.read_text().strip().splitlines()
+    assert len(lines) == 1
+    record = json.loads(lines[0])
+    assert record["metadata"]["platform"] == "facebook"
+    assert record["metadata"]["extractor"] == "brightdata"
+    assert record["metadata"]["post_ref"]["post_id"] == "122243006504090679"
+    media = record["metadata"]["post_representation"]["media"]
+    assert len(media) == 2
+    assert sum(1 for entry in media if entry["media_type"] == "video") == 1
+    assert sum(1 for entry in media if entry["media_type"] == "image") == 1
+
+
 def test_e2e_instagram_gather_and_export_jsonl(ig_export_path, output_dir):
     if not ig_export_path.exists():
         pytest.skip("Test data not available")
