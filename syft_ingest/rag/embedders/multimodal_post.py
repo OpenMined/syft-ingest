@@ -5,6 +5,11 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from syft_ingest.rag.embedders.clip_contract import (
+    DEFAULT_CLIP_MODEL,
+    build_embedding_contract,
+    load_sentence_transformer,
+)
 from syft_ingest.rag.embedders.multimodal_video import extract_frames_with_opencv
 
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
@@ -245,7 +250,7 @@ def _collect_video_frame_paths(
 def embed_posts_multimodal(
     records: list[dict[str, Any]],
     *,
-    model_name: str = "clip-ViT-B-32",
+    model_name: str = DEFAULT_CLIP_MODEL,
     batch_size: int = 16,
     summarize_long_text: bool = False,
     summary_min_chars: int = 900,
@@ -263,15 +268,8 @@ def embed_posts_multimodal(
     if not records:
         return []
 
-    try:
-        from sentence_transformers import SentenceTransformer
-    except ImportError as e:
-        raise RuntimeError(
-            "sentence-transformers is required for multimodal post embeddings. "
-            "Install with: `uv sync --extra multimodal`"
-        ) from e
-
-    model = SentenceTransformer(model_name)
+    model = load_sentence_transformer(model_name)
+    contract = build_embedding_contract(model_name)
     stable_frames_root = Path(frames_root) if frames_root else None
 
     text_inputs: list[str] = []
@@ -372,7 +370,7 @@ def embed_posts_multimodal(
                 **record,
                 "embedding": embedding,
                 "embedding_dim": len(embedding),
-                "embedding_model": model_name,
+                **contract,
                 "embedding_text": text_inputs[idx],
                 "summary_used": summaries[idx] is not None,
                 "summary_text": summaries[idx],

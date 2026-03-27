@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from syft_ingest.rag.embedders.clip_contract import DEFAULT_CLIP_MODEL
 from syft_ingest.rag.embedders.multimodal_post import embed_posts_multimodal
 from syft_ingest.sources._meta_utils import (
     derive_title,
@@ -42,7 +43,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--clip-model",
-        default="clip-ViT-B-32",
+        default=DEFAULT_CLIP_MODEL,
         help="CLIP model name for text+image embeddings",
     )
     parser.add_argument(

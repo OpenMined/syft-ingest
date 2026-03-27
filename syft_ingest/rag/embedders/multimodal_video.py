@@ -5,6 +5,12 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+from syft_ingest.rag.embedders.clip_contract import (
+    DEFAULT_CLIP_MODEL,
+    build_embedding_contract,
+    load_sentence_transformer,
+)
+
 
 @dataclass(frozen=True)
 class FrameSample:
@@ -224,7 +230,7 @@ def transcribe_video_with_whisper(
 def embed_records_with_clip(
     records: list[dict],
     *,
-    model_name: str = "clip-ViT-B-32",
+    model_name: str = DEFAULT_CLIP_MODEL,
     text_weight: float = 0.35,
     batch_size: int = 16,
 ) -> list[dict]:
@@ -240,15 +246,8 @@ def embed_records_with_clip(
             "`uv sync --extra multimodal`"
         ) from e
 
-    try:
-        from sentence_transformers import SentenceTransformer
-    except ImportError as e:
-        raise RuntimeError(
-            "sentence-transformers is required for CLIP embeddings. "
-            "Install with: `uv sync --extra multimodal`"
-        ) from e
-
-    model = SentenceTransformer(model_name)
+    model = load_sentence_transformer(model_name)
+    contract = build_embedding_contract(model_name)
 
     images = []
     for record in records:
@@ -296,6 +295,7 @@ def embed_records_with_clip(
                 **record,
                 "embedding": fused,
                 "embedding_dim": len(fused),
+                **contract,
             }
         )
 
@@ -328,7 +328,7 @@ def embed_video_multimodal(
     transcript_path: str | Path | None = None,
     whisper_model: str | None = None,
     transcript_window_seconds: float = 8.0,
-    clip_model: str = "clip-ViT-B-32",
+    clip_model: str = DEFAULT_CLIP_MODEL,
     text_weight: float = 0.35,
     batch_size: int = 16,
 ) -> Path:
