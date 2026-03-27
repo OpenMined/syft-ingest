@@ -113,6 +113,16 @@ Facebook and Instagram exports are auto-detected. Adding a new platform parser r
 
 Embed non-YouTube videos by combining sampled frame embeddings with nearby transcript text.
 
+Embedding contract:
+- backend: `sentence-transformers`
+- default model: `clip-ViT-B-32`
+- output vectors are L2-normalized
+- output rows include `embedding_backend`, `embedding_family`, `embedding_model`,
+  `embedding_space`, and `embedding_normalized`
+
+Consumers such as `syft-influencer` should use the same query embedding backend/model
+when searching a collection produced by these scripts.
+
 Run:
 
 ```bash
@@ -155,6 +165,10 @@ Embed Facebook posts as one vector per post using:
 - sampled frames from local post videos.
 
 Optional summarization for long text is available but disabled by default.
+
+These embeddings use the same explicit CLIP contract as the video pipeline:
+`sentence-transformers` + `clip-ViT-B-32` by default, with alignment metadata
+stored on each output row so downstream retrieval can verify compatibility.
 
 ```bash
 uv run python scripts/embed_posts_multimodal.py \

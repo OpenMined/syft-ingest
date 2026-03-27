@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 
+from syft_ingest.rag.embedders.clip_contract import DEFAULT_CLIP_MODEL
 from syft_ingest.rag.embedders.multimodal_video import embed_video_multimodal
 
 
@@ -50,7 +51,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--clip-model",
-        default="clip-ViT-B-32",
+        default=DEFAULT_CLIP_MODEL,
         help="sentence-transformers CLIP model",
     )
     parser.add_argument(
