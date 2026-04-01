@@ -37,6 +37,7 @@ This provides Facebook and Instagram export samples at `data/creators/syft-influ
 - Facebook data export parsing (Meta's "Download Your Information" JSON format)
 - Facebook crawler export parsing (Bright Data / similar JSON exports)
 - Instagram data export parsing (same Meta format, different schema)
+- Instagram crawler export parsing (Bright Data / similar JSON exports)
 - Meta encoding bug fix (UTF-8-as-Latin-1 mojibake)
 - Hashtag and mention extraction
 - Post-level representation extraction for Facebook (`post_ref` + `post_representation`):
@@ -73,6 +74,17 @@ corpus.export("json", output="output.json")
 
 # Text (one .txt file per item)
 corpus.export("text", output_dir="./output-texts/")
+```
+
+### CLI
+
+```bash
+uv run syft-ingest local-export \
+  --author "Creator Name" \
+  --input-dir ./data/creators/creator/facebook-brightdata \
+  --input-dir ./data/creators/creator/instagram-brightdata \
+  --format jsonl \
+  --output ./output/creator_social_posts.jsonl
 ```
 
 ### `corpus.all_items()` — access items in memory

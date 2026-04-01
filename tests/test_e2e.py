@@ -122,6 +122,105 @@ def test_e2e_instagram_gather_and_export_jsonl(ig_export_path, output_dir):
         assert record["ingested_at"]
 
 
+def test_e2e_brightdata_instagram_gather_and_export_jsonl(tmp_path, output_dir):
+    brightdata_dir = tmp_path / "brightdata-ig"
+    brightdata_dir.mkdir(parents=True, exist_ok=True)
+    brightdata_payload = [
+        {
+            "url": "https://www.instagram.com/p/DIWPWGpsUQX/",
+            "shortcode": "DIWPWGpsUQX",
+            "user_posted": "paintedwildflower",
+            "description": "Carousel caption #watercolor",
+            "hashtags": ["#painting"],
+            "date_posted": "2025-04-12T13:03:14.000Z",
+            "photos": [
+                "https://cdninstagram.com/example/photo-1.jpg",
+                "https://cdninstagram.com/example/photo-2.jpg",
+            ],
+        }
+    ]
+    (brightdata_dir / "brightdata-instagram.json").write_text(
+        json.dumps(brightdata_payload), encoding="utf-8"
+    )
+
+    output_file = output_dir / "ig-brightdata.jsonl"
+    corpus = syft_ingest.gather(
+        "Syft Influencer Test",
+        sources=["local"],
+        local_dirs=[str(brightdata_dir)],
+    )
+    corpus.export("jsonl", output=str(output_file))
+
+    lines = output_file.read_text().strip().splitlines()
+    assert len(lines) == 1
+    record = json.loads(lines[0])
+    assert record["metadata"]["platform"] == "instagram"
+    assert record["metadata"]["extractor"] == "brightdata"
+    assert record["metadata"]["post_ref"]["shortcode"] == "DIWPWGpsUQX"
+    media = record["metadata"]["post_representation"]["media"]
+    assert len(media) == 2
+    assert all(entry["media_type"] == "image" for entry in media)
+
+
+def test_e2e_brightdata_instagram_export_preserves_rich_media_fields(
+    tmp_path, output_dir
+):
+    brightdata_dir = tmp_path / "brightdata-ig-rich"
+    brightdata_dir.mkdir(parents=True, exist_ok=True)
+    brightdata_payload = [
+        {
+            "url": "https://www.instagram.com/p/DWCU6pojQMN/",
+            "shortcode": "DWCU6pojQMN",
+            "user_posted": "katykicker",
+            "description": "Video caption",
+            "date_posted": "2026-03-18T18:47:21.000Z",
+            "content_type": "Reel",
+            "photos": ["https://cdninstagram.com/example/cover.jpg"],
+            "videos": ["https://cdninstagram.com/example/video.mp4"],
+            "thumbnail": "https://cdninstagram.com/example/thumb.jpg",
+            "audio": {
+                "audio_asset_id": "audio-123",
+                "original_audio_title": "Original sound",
+            },
+            "post_content": [
+                {
+                    "index": 0,
+                    "type": "Video",
+                    "url": "https://cdninstagram.com/example/video.mp4",
+                }
+            ],
+            "latest_comments": [
+                {
+                    "comments": "Helpful video",
+                    "user_commenting": "commenter_1",
+                    "date_of_comment": "2026-03-18",
+                }
+            ],
+        }
+    ]
+    (brightdata_dir / "brightdata-instagram-rich.json").write_text(
+        json.dumps(brightdata_payload), encoding="utf-8"
+    )
+
+    output_file = output_dir / "ig-brightdata-rich.jsonl"
+    corpus = syft_ingest.gather(
+        "Syft Influencer Test",
+        sources=["local"],
+        local_dirs=[str(brightdata_dir)],
+    )
+    corpus.export("jsonl", output=str(output_file))
+
+    lines = output_file.read_text().strip().splitlines()
+    assert len(lines) == 1
+    record = json.loads(lines[0])
+    post_repr = record["metadata"]["post_representation"]
+    assert post_repr["content_type"] == "Reel"
+    assert post_repr["thumbnail_url"] == "https://cdninstagram.com/example/thumb.jpg"
+    assert post_repr["audio"]["audio_asset_id"] == "audio-123"
+    assert len(post_repr["content_items"]) == 1
+    assert len(post_repr["latest_comments"]) == 1
+
+
 def test_e2e_combined_gather(fb_export_path, ig_export_path, output_dir):
     if not fb_export_path.exists() or not ig_export_path.exists():
         pytest.skip("Test data not available")
