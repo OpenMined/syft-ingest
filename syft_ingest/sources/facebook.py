@@ -16,7 +16,6 @@ from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
 
 from loguru import logger
 
@@ -30,13 +29,17 @@ from syft_ingest.sources._meta_utils import (
     fix_meta_encoding_recursive,
     is_bare_url,
 )
+from syft_ingest.sources._social_media_common import (
+    extract_tags_from_field,
+    guess_media_type,
+    is_http_url,
+    iter_media_urls,
+    media_type_counts,
+)
 
 # Max reasonable timestamp: year 2100
 _MAX_TIMESTAMP = 4102444800
 
-_VIDEO_EXTS = {".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi"}
-_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tiff"}
-_MEDIA_HOST_HINTS = ("fbcdn.net", "cdninstagram.com")
 _HTTP_URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
 
 
@@ -53,6 +56,29 @@ def _looks_like_brightdata_row(row: Any) -> bool:
             return bool(value.strip())
         return isinstance(value, (int, float))
 
+    facebook_markers = any(
+        _nonempty_scalar(row.get(key))
+        for key in (
+            "page_name",
+            "page_category",
+            "profile_handle",
+            "group_name",
+            "group_id",
+        )
+    ) or any(
+        isinstance(row.get(key), list) and bool(row.get(key))
+        for key in ("attachments",)
+    )
+    instagram_markers = any(
+        _nonempty_scalar(row.get(key))
+        for key in ("user_posted", "shortcode", "content_id", "pk")
+    ) or any(
+        isinstance(row.get(key), list) and bool(row.get(key))
+        for key in ("post_content", "photos", "videos")
+    )
+    if instagram_markers and not facebook_markers:
+        return False
+
     has_identity = any(
         _nonempty_scalar(row.get(key))
         for key in ("post_id", "url", "post_url", "permalink", "date_posted")
@@ -64,7 +90,7 @@ def _looks_like_brightdata_row(row: Any) -> bool:
     attachments = row.get("attachments")
     has_attachment_payload = isinstance(attachments, list) and bool(attachments)
     has_top_level_media_payload = any(
-        _is_http_url(row.get(key))
+        is_http_url(row.get(key))
         for key in ("post_image", "post_external_image", "video_url")
     )
     return has_identity and (
@@ -158,77 +184,6 @@ def _parse_iso_datetime(value: str) -> datetime | None:
         return parsed.replace(tzinfo=UTC)
     return parsed.astimezone(UTC)
 
-
-def _is_http_url(value: Any) -> bool:
-    return isinstance(value, str) and value.startswith(("http://", "https://"))
-
-
-def _guess_media_type(url: str, source_field: str) -> str:
-    lower_field = source_field.lower()
-    if "video_url" in lower_field:
-        return "video"
-    if any(
-        token in lower_field for token in ("thumbnail", "image", "photo", "picture")
-    ):
-        return "image"
-
-    parsed = urlparse(url)
-    suffix = Path(parsed.path).suffix.lower()
-    if suffix in _VIDEO_EXTS:
-        return "video"
-    if suffix in _IMAGE_EXTS:
-        return "image"
-
-    host = parsed.netloc.lower()
-    if "video-" in host and "fbcdn.net" in host:
-        return "video"
-    if "scontent-" in host and "fbcdn.net" in host:
-        return "image"
-    if any(hint in host for hint in _MEDIA_HOST_HINTS):
-        return "image"
-    return "other"
-
-
-def _iter_media_urls(obj: Any, path: str = "") -> list[tuple[str, str, str]]:
-    """Recursively find media URLs in nested JSON and classify by type."""
-    found: list[tuple[str, str, str]] = []
-    if isinstance(obj, dict):
-        for key, value in obj.items():
-            new_path = f"{path}.{key}" if path else key
-            if _is_http_url(value):
-                media_type = _guess_media_type(value, new_path)
-                if media_type in {"video", "image"}:
-                    found.append((value, media_type, new_path))
-            else:
-                found.extend(_iter_media_urls(value, new_path))
-        return found
-    if isinstance(obj, list):
-        for index, value in enumerate(obj):
-            new_path = f"{path}[{index}]" if path else f"[{index}]"
-            found.extend(_iter_media_urls(value, new_path))
-    return found
-
-
-def _normalize_tag(value: str) -> str | None:
-    tag = value.strip().lstrip("#").lower()
-    return tag or None
-
-
-def _extract_tags_from_field(raw: Any) -> list[str]:
-    tags: list[str] = []
-    if isinstance(raw, list):
-        for value in raw:
-            if isinstance(value, str):
-                normalized = _normalize_tag(value)
-                if normalized:
-                    tags.append(normalized)
-    elif isinstance(raw, str):
-        normalized = _normalize_tag(raw)
-        if normalized:
-            tags.append(normalized)
-    return tags
-
-
 def _extract_urls_from_text(text: str) -> list[str]:
     seen: set[str] = set()
     urls: list[str] = []
@@ -238,13 +193,6 @@ def _extract_urls_from_text(text: str) -> list[str]:
         seen.add(match)
         urls.append(match)
     return urls
-
-
-def _media_type_counts(media: list[dict[str, Any]]) -> tuple[int, int]:
-    video_count = sum(1 for entry in media if entry.get("media_type") == "video")
-    image_count = sum(1 for entry in media if entry.get("media_type") == "image")
-    return video_count, image_count
-
 
 def _build_post_representation(
     *,
@@ -336,7 +284,7 @@ def _build_meta_content_item(post: dict[str, Any], author: str) -> ContentItem |
     published_at = _safe_timestamp(post.get("timestamp"))
 
     date_str = published_at.strftime("%Y-%m-%d") if published_at else "unknown date"
-    media_entries = _iter_media_urls(post.get("attachments", []), "attachments")
+    media_entries = iter_media_urls(post.get("attachments", []), "attachments")
     media_by_url: dict[str, dict[str, Any]] = {}
     for media_url, media_type, source_field in media_entries:
         entry = media_by_url.get(media_url)
@@ -409,7 +357,7 @@ def _extract_brightdata_post_text(post: dict[str, Any]) -> str:
 def _extract_brightdata_post_url(post: dict[str, Any]) -> str:
     for key in ("url", "post_url", "permalink"):
         value = post.get(key)
-        if _is_http_url(value):
+        if is_http_url(value):
             return value.strip()
     return ""
 
@@ -436,11 +384,11 @@ def _extract_brightdata_published_at(post: dict[str, Any]) -> datetime | None:
 
 def _collect_brightdata_media(post: dict[str, Any]) -> list[dict[str, Any]]:
     media_by_url: dict[str, dict[str, Any]] = {}
-    media_entries = _iter_media_urls(post.get("attachments", []), "attachments")
+    media_entries = iter_media_urls(post.get("attachments", []), "attachments")
     for key in ("post_image", "post_external_image", "video_url"):
         value = post.get(key)
-        if _is_http_url(value):
-            media_type = _guess_media_type(value, key)
+        if is_http_url(value):
+            media_type = guess_media_type(value, key)
             if media_type in {"video", "image"}:
                 media_entries.append((value, media_type, key))
 
@@ -487,7 +435,7 @@ def _build_brightdata_content_item(
             seen_tags.add(tag)
             tags.append(tag)
     for field_name in ("hashtags", "tags"):
-        for tag in _extract_tags_from_field(post.get(field_name)):
+        for tag in extract_tags_from_field(post.get(field_name)):
             if tag not in seen_tags:
                 seen_tags.add(tag)
                 tags.append(tag)
@@ -503,7 +451,7 @@ def _build_brightdata_content_item(
         mentions=mentions,
         media=media,
     )
-    video_count, image_count = _media_type_counts(media)
+    video_count, image_count = media_type_counts(media)
 
     if text:
         content_for_hash = text

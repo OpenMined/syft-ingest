@@ -159,6 +159,49 @@ def test_is_facebook_export_detects_brightdata_with_generic_filename(tmp_path):
     assert is_facebook_export(tmp_path)
 
 
+def test_is_facebook_export_ignores_instagram_brightdata_rows(tmp_path):
+    rows = [
+        {
+            "url": "https://www.instagram.com/p/DIWPWGpsUQX/",
+            "shortcode": "DIWPWGpsUQX",
+            "user_posted": "paintedwildflower",
+            "description": "Carousel caption #watercolor",
+            "date_posted": "2025-04-12T13:03:14.000Z",
+            "photos": ["https://cdninstagram.com/example/photo-1.jpg"],
+        }
+    ]
+    (tmp_path / "brightdata-instagram.json").write_text(
+        json.dumps(rows), encoding="utf-8"
+    )
+    assert not is_facebook_export(tmp_path)
+
+
+def test_is_facebook_export_ignores_instagram_brightdata_live_post_shape(tmp_path):
+    rows = [
+        {
+            "url": "https://www.instagram.com/p/DWg8NuZEj9p",
+            "user_posted": "instagram",
+            "description": "the perfect side quest doesn’t exi–",
+            "post_id": "3864353306240499561",
+            "shortcode": "DWg8NuZEj9p",
+            "content_id": "DWg8NuZEj9p",
+            "pk": "3864353306240499561",
+            "photos": ["https://cdninstagram.com/example/photo-1.jpg"],
+            "videos": ["https://cdninstagram.com/example/video-1.mp4"],
+            "post_content": [
+                {
+                    "type": "Video",
+                    "url": "https://cdninstagram.com/example/video-1.mp4",
+                }
+            ],
+        }
+    ]
+    (tmp_path / "brightdata-instagram-live.json").write_text(
+        json.dumps(rows), encoding="utf-8"
+    )
+    assert not is_facebook_export(tmp_path)
+
+
 def test_parse_facebook_export_brightdata_extracts_post_representation(tmp_path):
     brightdata = [
         {
