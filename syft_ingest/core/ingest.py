@@ -309,16 +309,29 @@ def _upsert_qdrant_points(
         return inserted_ids
     batch_size = max(1, destination.batch_size)
     _, _, PointStruct, _ = _import_qdrant()
-    for start in range(0, len(points), batch_size):
-        batch = points[start : start + batch_size]
-        point_structs = [
-            PointStruct(
-                id=point["id"], vector=point["vector"], payload=point["payload"]
+    try:
+        for start in range(0, len(points), batch_size):
+            batch = points[start : start + batch_size]
+            point_structs = [
+                PointStruct(
+                    id=point["id"], vector=point["vector"], payload=point["payload"]
+                )
+                for point in batch
+            ]
+            client.upsert(
+                collection_name=destination.collection_name, points=point_structs
             )
-            for point in batch
-        ]
-        client.upsert(collection_name=destination.collection_name, points=point_structs)
-        inserted_ids.extend(point["id"] for point in batch)
+            inserted_ids.extend(point["id"] for point in batch)
+    except Exception:
+        if inserted_ids:
+            try:
+                client.delete(
+                    collection_name=destination.collection_name,
+                    points_selector=inserted_ids,
+                )
+            except Exception:
+                pass
+        raise
     return inserted_ids
 
 

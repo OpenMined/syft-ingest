@@ -27,6 +27,7 @@ class _FakeQdrantClient:
     def __init__(self, *args, **kwargs) -> None:
         self.created: list[tuple[str, int]] = []
         self.deleted: list[str] = []
+        self.delete_calls: list[tuple[str, list[str]]] = []
         self.upserts: list[tuple[str, list[dict]]] = []
         self._collections = _FakeCollections([])
 
@@ -47,6 +48,9 @@ class _FakeQdrantClient:
 
     def upsert(self, collection_name: str, points: list[dict]):
         self.upserts.append((collection_name, points))
+
+    def delete(self, collection_name: str, points_selector: list[str]):
+        self.delete_calls.append((collection_name, list(points_selector)))
 
 
 class _FakeDistance:
@@ -163,3 +167,77 @@ def test_ingest_corpus_supports_source_spec_metadata(tmp_path, patch_ingest_runt
 
     assert report.documents_total == 1
     assert report.chunks_total == 1
+
+
+def test_ingest_jsonl_rolls_back_partial_upserts(monkeypatch, tmp_path):
+    manifest = tmp_path / "manifest.jsonl"
+    manifest.write_text(
+        json.dumps(
+            {
+                "title": "Post one",
+                "author": "Katy Stevens",
+                "url": "https://www.instagram.com/p/abc123/",
+                "text": "first document",
+                "site": "instagram.com",
+                "source_type": "social_media_post",
+                "metadata": {"platform": "instagram", "extractor": "brightdata"},
+            }
+        )
+        + "\n"
+        + json.dumps(
+            {
+                "title": "Post two",
+                "author": "Katy Stevens",
+                "url": "https://www.instagram.com/p/def456/",
+                "text": "second document",
+                "site": "instagram.com",
+                "source_type": "social_media_post",
+                "metadata": {"platform": "instagram", "extractor": "brightdata"},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    class FailingQdrantClient(_FakeQdrantClient):
+        last_instance = None
+
+        def __init__(self, *args, **kwargs) -> None:
+            super().__init__(*args, **kwargs)
+            self.upsert_calls = 0
+            FailingQdrantClient.last_instance = self
+
+        def upsert(self, collection_name: str, points: list[dict]):
+            self.upsert_calls += 1
+            super().upsert(collection_name, points)
+            if self.upsert_calls == 2:
+                raise RuntimeError("transient qdrant failure")
+
+    monkeypatch.setattr(
+        "syft_ingest.core.ingest.build_text_embedder", lambda *a, **k: _FakeEmbedder()
+    )
+    monkeypatch.setattr(
+        "syft_ingest.core.ingest._import_qdrant",
+        lambda: (
+            FailingQdrantClient,
+            _FakeDistance,
+            _FakePointStruct,
+            _FakeVectorParams,
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="transient qdrant failure"):
+        ingest_jsonl(
+            manifest,
+            destination=QdrantDestination(
+                collection_name="katy-stevens",
+                reset_collection=True,
+                batch_size=1,
+            ),
+            embedding=EmbeddingSpec(),
+            chunking=ChunkingSpec(chunk_size=500, chunk_overlap=0, min_chunk_size=0),
+        )
+
+    client = FailingQdrantClient.last_instance
+    assert client is not None
+    assert client.delete_calls == [("katy-stevens", [client.upserts[0][1][0].id])]
