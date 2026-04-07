@@ -1,8 +1,21 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel, Field, model_validator
+
+
+@runtime_checkable
+class SourceSpec(Protocol):
+    """Protocol for all source specifications.
+
+    Any new source kind (e.g. YouTube channel, podcast RSS) must satisfy this
+    protocol so that ``gather()`` can dispatch on it without isinstance checks
+    against concrete types.
+    """
+
+    kind: str
+    raw_dirs: list[str]
 
 
 class SocialProfileSource(BaseModel):
@@ -25,6 +38,3 @@ class SocialProfileSource(BaseModel):
         if not self.handle and not self.profile_url:
             raise ValueError("SocialProfileSource requires handle or profile_url")
         return self
-
-
-SourceSpec = SocialProfileSource

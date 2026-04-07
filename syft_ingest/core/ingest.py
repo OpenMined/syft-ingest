@@ -3,9 +3,11 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Protocol, runtime_checkable
+
+from loguru import logger
+from pydantic import BaseModel, Field
 
 from syft_ingest.core.models import Corpus
 
@@ -15,35 +17,68 @@ except ImportError:  # pragma: no cover - optional dependency
     RecursiveCharacterTextSplitter = None
 
 
+# ---------------------------------------------------------------------------
+# Domain exceptions
+# ---------------------------------------------------------------------------
+
+
+class IngestError(Exception):
+    """Base exception for ingestion errors."""
+
+
+class MissingDependencyError(IngestError):
+    """A required optional dependency is not installed."""
+
+
+class NoDocumentsError(IngestError):
+    """No documents available for ingestion."""
+
+
+class UnsupportedBackendError(IngestError):
+    """The requested embedding backend is not supported."""
+
+
+# ---------------------------------------------------------------------------
+# Embedder protocol
+# ---------------------------------------------------------------------------
+
 DEFAULT_TEXT_MODEL = "BAAI/bge-small-en-v1.5"
 DEFAULT_EMBEDDING_BACKEND = "fastembed"
 
 
-@dataclass(frozen=True)
-class EmbeddingSpec:
+@runtime_checkable
+class Embedder(Protocol):
+    """Protocol for text embedding backends."""
+
+    def embed(self, texts: Iterable[str]) -> Iterable[list[float]]: ...
+
+
+# ---------------------------------------------------------------------------
+# Public config models (Pydantic at boundaries)
+# ---------------------------------------------------------------------------
+
+
+class EmbeddingSpec(BaseModel, frozen=True):
     backend: str = DEFAULT_EMBEDDING_BACKEND
     model: str = DEFAULT_TEXT_MODEL
 
 
-@dataclass(frozen=True)
-class ChunkingSpec:
-    chunk_size: int = 1000
-    chunk_overlap: int = 250
-    min_chunk_size: int = 200
+class ChunkingSpec(BaseModel, frozen=True):
+    chunk_size: int = Field(default=1000, gt=0)
+    chunk_overlap: int = Field(default=250, ge=0)
+    min_chunk_size: int = Field(default=200, ge=0)
 
 
-@dataclass(frozen=True)
-class QdrantDestination:
-    collection_name: str
+class QdrantDestination(BaseModel, frozen=True):
+    collection_name: str = Field(min_length=1)
     url: str | None = "http://127.0.0.1:6333"
     path: str | None = None
-    timeout: float = 60.0
-    batch_size: int = 500
+    timeout: float = Field(default=60.0, gt=0)
+    batch_size: int = Field(default=500, gt=0)
     reset_collection: bool = False
 
 
-@dataclass(frozen=True)
-class IngestReport:
+class IngestReport(BaseModel, frozen=True):
     collection_name: str
     documents_total: int
     chunks_total: int
@@ -51,10 +86,22 @@ class IngestReport:
     embedding_contract: dict[str, Any]
 
 
-@dataclass
+# ---------------------------------------------------------------------------
+# Internal doc representation
+# ---------------------------------------------------------------------------
+
+
 class _Doc:
-    text: str
-    payload: dict[str, Any]
+    __slots__ = ("text", "payload")
+
+    def __init__(self, text: str, payload: dict[str, Any]) -> None:
+        self.text = text
+        self.payload = payload
+
+
+# ---------------------------------------------------------------------------
+# Embedding helpers
+# ---------------------------------------------------------------------------
 
 
 def normalize_embedding_backend(backend: str | None) -> str:
@@ -105,13 +152,13 @@ def build_embedding_contract(
     return contract
 
 
-def build_text_embedder(model_name: str, backend: str | None = None):
+def build_text_embedder(model_name: str, backend: str | None = None) -> Embedder:
     normalized_backend = normalize_embedding_backend(backend)
     if normalized_backend == "fastembed":
         try:
             from fastembed import TextEmbedding
         except ImportError as exc:  # pragma: no cover - dependency failure
-            raise RuntimeError(
+            raise MissingDependencyError(
                 "fastembed is required for backend='fastembed'. Install with: `uv sync --extra rag`"
             ) from exc
         return TextEmbedding(model_name=model_name)
@@ -119,7 +166,7 @@ def build_text_embedder(model_name: str, backend: str | None = None):
         try:
             from sentence_transformers import SentenceTransformer
         except ImportError as exc:  # pragma: no cover - dependency failure
-            raise RuntimeError(
+            raise MissingDependencyError(
                 "sentence-transformers is required for backend='sentence-transformers'. "
                 "Install with: `uv sync --extra multimodal`"
             ) from exc
@@ -145,7 +192,12 @@ def build_text_embedder(model_name: str, backend: str | None = None):
                 )
 
         return SentenceTransformersTextEmbedder(model_name)
-    raise RuntimeError(f"Unsupported embedding backend: {backend!r}")
+    raise UnsupportedBackendError(f"Unsupported embedding backend: {backend!r}")
+
+
+# ---------------------------------------------------------------------------
+# Qdrant helpers
+# ---------------------------------------------------------------------------
 
 
 def _import_qdrant():
@@ -153,7 +205,7 @@ def _import_qdrant():
         from qdrant_client import QdrantClient
         from qdrant_client.http.models import Distance, PointStruct, VectorParams
     except ImportError as exc:  # pragma: no cover - dependency failure
-        raise RuntimeError(
+        raise MissingDependencyError(
             "qdrant-client is required for Qdrant ingestion. Install with: `uv sync --extra qdrant`"
         ) from exc
     return QdrantClient, Distance, PointStruct, VectorParams
@@ -166,6 +218,11 @@ def _merge_embedding_contract(
     metadata = dict(metadata) if isinstance(metadata, dict) else {}
     metadata.update(contract)
     payload["metadata"] = metadata
+
+
+# ---------------------------------------------------------------------------
+# Chunking — to_rag() owns chunking per CLAUDE.md
+# ---------------------------------------------------------------------------
 
 
 def _chunk_text(text: str, spec: ChunkingSpec) -> list[str]:
@@ -237,6 +294,42 @@ def _enrich_text(doc: _Doc) -> str:
     return f"{header}{desc_line}\n\n{doc.text}"
 
 
+def to_rag(docs: list[_Doc], chunking: ChunkingSpec) -> list[_Doc]:
+    """Chunk documents for RAG ingestion.
+
+    This is the single place where chunking happens, per architecture rule:
+    'to_rag() chunks. export() does NOT chunk.'
+    """
+    chunked: list[_Doc] = []
+    for doc in docs:
+        enriched = _enrich_text(doc)
+        chunks = _chunk_text(enriched, chunking)
+        raw_hash = hashlib.sha256(doc.text.encode("utf-8")).hexdigest()
+        source_id = doc.payload.get("url") or doc.payload.get("title") or "doc"
+        stable_doc_key = f"{source_id}::{doc.payload.get('source', '')}::{raw_hash}"
+        raw_doc_id = str(uuid.uuid5(uuid.NAMESPACE_URL, stable_doc_key))
+
+        for idx, chunk in enumerate(chunks):
+            payload = dict(doc.payload)
+            payload.update(
+                {
+                    "chunk_index": idx,
+                    "chunk_count": len(chunks),
+                    "text": chunk,
+                    "raw_text": doc.text,
+                    "excerpt": chunk[:240],
+                    "_raw_doc_id": raw_doc_id,
+                }
+            )
+            chunked.append(_Doc(text=chunk, payload=payload))
+    return chunked
+
+
+# ---------------------------------------------------------------------------
+# Document extraction
+# ---------------------------------------------------------------------------
+
+
 def _doc_from_record(obj: dict[str, Any]) -> _Doc | None:
     text = obj.get("text") or obj.get("content") or ""
     if not text:
@@ -265,11 +358,17 @@ def _iter_docs_from_jsonl(manifest_jsonl: str | Path) -> list[_Doc]:
     path = Path(manifest_jsonl).expanduser().resolve()
     docs: list[_Doc] = []
     with path.open("r", encoding="utf-8") as handle:
-        for line in handle:
+        for line_number, line in enumerate(handle, start=1):
             line = line.strip()
             if not line:
                 continue
-            record = json.loads(line)
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError as exc:
+                logger.warning(
+                    "Skipping malformed JSONL at line {}: {}", line_number, exc
+                )
+                continue
             if not isinstance(record, dict):
                 continue
             doc = _doc_from_record(record)
@@ -301,6 +400,11 @@ def _iter_docs_from_corpus(corpus: Corpus) -> list[_Doc]:
     return docs
 
 
+# ---------------------------------------------------------------------------
+# Qdrant upsert with rollback
+# ---------------------------------------------------------------------------
+
+
 def _upsert_qdrant_points(
     client, destination: QdrantDestination, points: list[dict]
 ) -> list[str]:
@@ -329,8 +433,14 @@ def _upsert_qdrant_points(
                     collection_name=destination.collection_name,
                     points_selector=inserted_ids,
                 )
-            except Exception:
-                pass
+            except Exception as rollback_exc:
+                logger.error(
+                    "Rollback failed for collection {!r}: could not delete {} orphaned points. "
+                    "Manual cleanup may be required. Error: {}",
+                    destination.collection_name,
+                    len(inserted_ids),
+                    rollback_exc,
+                )
         raise
     return inserted_ids
 
@@ -343,8 +453,13 @@ def _create_qdrant_client(destination: QdrantDestination):
     elif destination.url:
         kwargs["url"] = destination.url
     else:
-        raise RuntimeError("QdrantDestination requires url or path")
+        raise IngestError("QdrantDestination requires url or path")
     return QdrantClient(**kwargs), Distance, VectorParams
+
+
+# ---------------------------------------------------------------------------
+# Core ingest pipeline
+# ---------------------------------------------------------------------------
 
 
 def _ingest_docs(
@@ -355,7 +470,7 @@ def _ingest_docs(
     chunking: ChunkingSpec,
 ) -> IngestReport:
     if not docs:
-        raise RuntimeError("No documents available for ingestion")
+        raise NoDocumentsError("No documents available for ingestion")
 
     embedder = build_text_embedder(embedding.model, embedding.backend)
     sample_vector = next(embedder.embed(["sample"]))
@@ -378,38 +493,26 @@ def _ingest_docs(
             ),
         )
 
+    # Chunking happens in to_rag(), not here.
+    rag_docs = to_rag(docs, chunking)
+
     points: list[dict[str, Any]] = []
-    for doc in docs:
-        raw_text = doc.text
-        raw_hash = hashlib.sha256(raw_text.encode("utf-8")).hexdigest()
-        enriched = _enrich_text(doc)
-        chunks = _chunk_text(enriched, chunking)
-        if not chunks:
+    for doc in rag_docs:
+        vectors = list(embedder.embed([doc.text]))
+        if not vectors:
             continue
-        vectors = []
-        for vector in embedder.embed(chunks):
-            vectors.append(
-                vector.tolist() if hasattr(vector, "tolist") else list(vector)
-            )
-        source_id = doc.payload.get("url") or doc.payload.get("title") or "doc"
-        stable_doc_key = f"{source_id}::{doc.payload.get('source', '')}::{raw_hash}"
-        raw_doc_id = str(uuid.uuid5(uuid.NAMESPACE_URL, stable_doc_key))
-        for idx, vector in enumerate(vectors):
-            payload = dict(doc.payload)
-            _merge_embedding_contract(payload, embedding_contract)
-            payload.update(
-                {
-                    "chunk_index": idx,
-                    "chunk_count": len(chunks),
-                    "text": chunks[idx],
-                    "raw_text": raw_text,
-                    "excerpt": chunks[idx][:240],
-                }
-            )
-            chunk_hash = hashlib.sha256(chunks[idx].encode("utf-8")).hexdigest()
-            stable_key = f"{raw_doc_id}::{idx}::{chunk_hash}"
-            point_id = str(uuid.uuid5(uuid.NAMESPACE_URL, stable_key))
-            points.append({"id": point_id, "vector": vector, "payload": payload})
+        vector = vectors[0]
+        vector = vector.tolist() if hasattr(vector, "tolist") else list(vector)
+
+        payload = dict(doc.payload)
+        _merge_embedding_contract(payload, embedding_contract)
+
+        raw_doc_id = payload.pop("_raw_doc_id", "doc")
+        chunk_hash = hashlib.sha256(doc.text.encode("utf-8")).hexdigest()
+        chunk_index = payload.get("chunk_index", 0)
+        stable_key = f"{raw_doc_id}::{chunk_index}::{chunk_hash}"
+        point_id = str(uuid.uuid5(uuid.NAMESPACE_URL, stable_key))
+        points.append({"id": point_id, "vector": vector, "payload": payload})
 
     point_ids = _upsert_qdrant_points(client, destination, points)
     return IngestReport(
@@ -419,6 +522,11 @@ def _ingest_docs(
         point_ids=point_ids,
         embedding_contract=embedding_contract,
     )
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
 
 
 def ingest_jsonl(

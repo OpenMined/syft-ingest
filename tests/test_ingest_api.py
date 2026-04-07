@@ -5,12 +5,14 @@ import pytest
 from syft_ingest import (
     ChunkingSpec,
     EmbeddingSpec,
+    NoDocumentsError,
     QdrantDestination,
     SocialProfileSource,
     gather,
     ingest_corpus,
     ingest_jsonl,
 )
+from syft_ingest.core.models import Corpus
 
 
 class _FakeCollectionInfo:
@@ -241,3 +243,59 @@ def test_ingest_jsonl_rolls_back_partial_upserts(monkeypatch, tmp_path):
     client = FailingQdrantClient.last_instance
     assert client is not None
     assert client.delete_calls == [("katy-stevens", [client.upserts[0][1][0].id])]
+
+
+def test_ingest_empty_corpus_raises_no_documents(patch_ingest_runtime):
+    """Empty corpus should raise NoDocumentsError, not a generic RuntimeError."""
+    corpus = Corpus(person="Nobody")
+    with pytest.raises(NoDocumentsError, match="No documents"):
+        ingest_corpus(
+            corpus,
+            destination=QdrantDestination(collection_name="empty-test"),
+        )
+
+
+def test_ingest_jsonl_skips_malformed_lines(tmp_path, patch_ingest_runtime):
+    """Malformed JSONL lines should be skipped, not crash the entire ingest."""
+    manifest = tmp_path / "manifest.jsonl"
+    manifest.write_text(
+        "this is not json\n"
+        + json.dumps(
+            {
+                "title": "Good post",
+                "author": "Test Author",
+                "url": "https://example.com/post",
+                "text": "This is valid content",
+                "source_type": "social_media_post",
+                "metadata": {},
+            }
+        )
+        + "\n"
+        + "{broken json\n",
+        encoding="utf-8",
+    )
+
+    report = ingest_jsonl(
+        manifest,
+        destination=QdrantDestination(collection_name="malformed-test"),
+        embedding=EmbeddingSpec(),
+        chunking=ChunkingSpec(chunk_size=500, chunk_overlap=0, min_chunk_size=0),
+    )
+
+    # Only the valid line should be ingested
+    assert report.documents_total == 1
+    assert report.chunks_total == 1
+
+
+def test_chunking_spec_rejects_invalid_values():
+    """ChunkingSpec should reject invalid values at the boundary."""
+    with pytest.raises(ValueError):
+        ChunkingSpec(chunk_size=0)
+    with pytest.raises(ValueError):
+        ChunkingSpec(chunk_size=-1)
+
+
+def test_qdrant_destination_rejects_empty_collection():
+    """QdrantDestination should reject empty collection name."""
+    with pytest.raises(ValueError):
+        QdrantDestination(collection_name="")

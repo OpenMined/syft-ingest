@@ -38,13 +38,21 @@ def _apply_social_profile_metadata(
 
 def _gather_from_source_spec(name: str, spec: SourceSpec) -> Corpus:
     corpus = Corpus(person=name)
-    if isinstance(spec, SocialProfileSource):
+    if not isinstance(spec, SourceSpec):
+        logger.warning("Object does not satisfy SourceSpec protocol: {!r}", spec)
+        return corpus
+
+    kind = getattr(spec, "kind", None)
+    if kind == "social_profile":
         from syft_ingest.sources.local import fetch_local
 
         corpus.add(fetch_local(spec.raw_dirs, author=name))
-        _apply_social_profile_metadata(spec, corpus)
+        # Apply social-specific metadata if the spec has the fields
+        if isinstance(spec, SocialProfileSource):
+            _apply_social_profile_metadata(spec, corpus)
         return corpus
-    logger.warning("Unsupported source spec: {!r}", spec)
+
+    logger.warning("Unsupported source spec kind: {!r}", kind)
     return corpus
 
 
