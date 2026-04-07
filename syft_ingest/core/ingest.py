@@ -44,6 +44,14 @@ class UnsupportedBackendError(IngestError):
 
 DEFAULT_TEXT_MODEL = "BAAI/bge-small-en-v1.5"
 DEFAULT_EMBEDDING_BACKEND = "fastembed"
+EMBEDDING_CONTRACT_KEYS = (
+    "embedding_backend",
+    "embedding_family",
+    "embedding_model",
+    "embedding_space",
+    "embedding_normalized",
+    "embedding_dim",
+)
 
 
 @runtime_checkable
@@ -218,6 +226,85 @@ def _merge_embedding_contract(
     metadata = dict(metadata) if isinstance(metadata, dict) else {}
     metadata.update(contract)
     payload["metadata"] = metadata
+
+
+def _extract_embedding_contract(payload: dict[str, Any]) -> dict[str, Any]:
+    contract: dict[str, Any] = {}
+    metadata_sources: list[dict[str, Any]] = []
+    metadata = payload.get("metadata")
+    if isinstance(metadata, dict):
+        metadata_sources.append(metadata)
+    metadata_json = payload.get("metadata_json")
+    if isinstance(metadata_json, str) and metadata_json.strip():
+        try:
+            decoded = json.loads(metadata_json)
+        except json.JSONDecodeError:
+            decoded = None
+        if isinstance(decoded, dict):
+            metadata_sources.append(decoded)
+    metadata_sources.append(payload)
+
+    for source in metadata_sources:
+        for key in EMBEDDING_CONTRACT_KEYS:
+            value = source.get(key)
+            if value in (None, ""):
+                continue
+            contract[key] = value
+    return contract
+
+
+def _load_existing_point_contracts(
+    client,
+    collection_name: str,
+    *,
+    sample_limit: int = 20,
+) -> list[dict[str, Any]]:
+    points, _ = client.scroll(
+        collection_name=collection_name,
+        limit=sample_limit,
+        with_payload=True,
+        with_vectors=False,
+    )
+    contracts: list[dict[str, Any]] = []
+    for point in points:
+        payload = getattr(point, "payload", None)
+        if isinstance(payload, dict):
+            contracts.append(_extract_embedding_contract(payload))
+    return contracts
+
+
+def _validate_existing_collection_contract(
+    client,
+    collection_name: str,
+    expected_contract: dict[str, Any],
+) -> None:
+    contracts = _load_existing_point_contracts(client, collection_name)
+    if not contracts:
+        return
+
+    missing_contract = next((contract for contract in contracts if not contract), None)
+    if missing_contract is not None:
+        raise IngestError(
+            f"Collection {collection_name!r} already exists but sampled points are "
+            "missing embedding contract metadata. Re-run with reset_collection=True "
+            "to replace the collection explicitly."
+        )
+
+    for stored_contract in contracts:
+        mismatches = {
+            key: {
+                "existing": stored_contract.get(key),
+                "expected": expected_contract.get(key),
+            }
+            for key in expected_contract
+            if stored_contract.get(key) != expected_contract.get(key)
+        }
+        if mismatches:
+            raise IngestError(
+                f"Collection {collection_name!r} embedding contract mismatch: "
+                f"{mismatches}. Re-run with reset_collection=True to replace the "
+                "collection explicitly."
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -485,6 +572,12 @@ def _ingest_docs(
     if destination.reset_collection and destination.collection_name in existing:
         client.delete_collection(collection_name=destination.collection_name)
         existing.remove(destination.collection_name)
+    if destination.collection_name in existing:
+        _validate_existing_collection_contract(
+            client,
+            destination.collection_name,
+            embedding_contract,
+        )
     if destination.collection_name not in existing:
         client.create_collection(
             collection_name=destination.collection_name,

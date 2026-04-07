@@ -3,6 +3,7 @@ import json
 import pytest
 
 import syft_ingest
+from syft_ingest.core.models import ContentItem, SourceType
 from syft_ingest.core.source_specs import SocialProfileSource
 
 
@@ -56,4 +57,33 @@ def test_social_profile_source_requires_identity():
         SocialProfileSource(
             platform="instagram",
             raw_dirs=["/tmp/example"],
+        )
+
+
+def test_gather_rejects_platform_mismatch_in_source_spec(monkeypatch):
+    def fake_fetch_local(_dirs, *, author=""):
+        return [
+            ContentItem(
+                title="Wrong export",
+                author=author or "Painted Wildflower",
+                source_type=SourceType.LOCAL,
+                text="facebook export text",
+                metadata={"platform": "facebook"},
+            )
+        ]
+
+    monkeypatch.setattr("syft_ingest.sources.local.fetch_local", fake_fetch_local)
+
+    with pytest.raises(RuntimeError, match="does not match source spec platform"):
+        syft_ingest.gather(
+            "Painted Wildflower",
+            source_specs=[
+                SocialProfileSource(
+                    platform="instagram",
+                    extractor="brightdata",
+                    handle="paintedwildflower",
+                    profile_url="https://www.instagram.com/paintedwildflower/",
+                    raw_dirs=["/tmp/example"],
+                )
+            ],
         )

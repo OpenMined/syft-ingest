@@ -160,6 +160,11 @@ destination = syft_ingest.QdrantDestination(
 - `point_ids`
 - `embedding_contract`
 
+If the destination collection already exists, `ingest_jsonl(...)` validates that
+sampled points in that collection match the requested embedding contract. If you
+intend to switch models or backends for an existing collection, rerun with
+`reset_collection=True` instead of mixing embedding spaces.
+
 ### `ingest_corpus()` — gather and ingest without writing JSONL first
 
 ```python

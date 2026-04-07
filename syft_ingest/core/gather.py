@@ -14,11 +14,10 @@ def _apply_social_profile_metadata(
         metadata = dict(item.metadata or {})
         parser_platform = str(metadata.get("platform") or "").strip().lower()
         if parser_platform and parser_platform != spec.platform:
-            logger.warning(
-                "Parsed platform %r does not match source spec platform %r for %s",
-                parser_platform,
-                spec.platform,
-                spec.raw_dirs,
+            raise RuntimeError(
+                "Parsed platform "
+                f"{parser_platform!r} does not match source spec platform "
+                f"{spec.platform!r} for {spec.raw_dirs}"
             )
         metadata.setdefault("platform", spec.platform)
         metadata.setdefault("extractor", spec.extractor)
