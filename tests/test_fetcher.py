@@ -1,15 +1,20 @@
-"""Tests for ContentFetcher Protocol and FetchError hierarchy."""
+"""Tests for ContentFetcher Protocol and fetch request/result contracts."""
 
 from __future__ import annotations
+
+from pathlib import Path
 
 from syft_ingest.core.fetcher import (
     ContentFetcher,
     FetchAuthError,
     FetchEmptyResultError,
     FetchError,
+    FetchRequest,
+    FetchResult,
     FetchTimeoutError,
 )
 from syft_ingest.core.models import ContentItem
+from syft_ingest.core.url_router import Platform
 
 # ---- Helpers ----
 
@@ -17,8 +22,22 @@ from syft_ingest.core.models import ContentItem
 class _StubFetcher:
     """Minimal class that satisfies the ContentFetcher Protocol."""
 
-    def fetch(self, urls: list[str]) -> list[ContentItem]:
-        return []
+    def fetch(self, request: FetchRequest) -> FetchResult:
+        return FetchResult(
+            items=[
+                ContentItem(
+                    title="Sample",
+                    author="Tester",
+                    source_type="local",
+                    url=request.urls[0],
+                    text="hello world",
+                )
+            ],
+            rows_fetched=1,
+            remote_job_id="remote-job-123",
+            remote_status="ready",
+            artifact_paths={"raw": Path("/tmp/raw.json")},
+        )
 
 
 class _NotAFetcher:
@@ -78,8 +97,44 @@ def test_catch_base_error():
 
 
 def test_stub_fetcher_callable():
-    """A minimal stub fetcher can be instantiated and called, returning empty list."""
+    """A minimal stub fetcher can be instantiated and called with FetchRequest."""
     fetcher = _StubFetcher()
-    result = fetcher.fetch(["https://example.com"])
-    assert result == []
-    assert isinstance(result, list)
+    request = FetchRequest(
+        platform=Platform.INSTAGRAM,
+        extractor="brightdata",
+        urls=["https://example.com/profile"],
+        handle="creator",
+        output_dir=Path("/tmp/fetch-output"),
+        config={"num_posts": 2},
+    )
+    result = fetcher.fetch(request)
+    assert isinstance(result, FetchResult)
+    assert result.rows_fetched == 1
+    assert result.remote_job_id == "remote-job-123"
+    assert result.remote_status == "ready"
+    assert result.artifact_paths["raw"] == Path("/tmp/raw.json")
+    assert result.items[0].url == "https://example.com/profile"
+
+
+def test_fetch_request_carries_worker_context():
+    """FetchRequest stores the source/job context the worker already has."""
+    request = FetchRequest(
+        platform=Platform.INSTAGRAM,
+        extractor="brightdata",
+        source_kind="profile-posts",
+        urls=["https://www.instagram.com/katykicker/"],
+        handle="katykicker",
+        profile_url="https://www.instagram.com/katykicker/",
+        external_account_id="17841436323898109",
+        source_slug="katy-instagram",
+        start_date="2026-01-01",
+        end_date="2026-02-01",
+        output_dir=Path("/tmp/katy"),
+        config={"num_posts": 10, "post_type": "reel"},
+    )
+    assert request.platform == Platform.INSTAGRAM
+    assert request.extractor == "brightdata"
+    assert request.source_kind == "profile-posts"
+    assert request.handle == "katykicker"
+    assert request.external_account_id == "17841436323898109"
+    assert request.config == {"num_posts": 10, "post_type": "reel"}
