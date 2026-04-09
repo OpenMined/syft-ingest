@@ -14,6 +14,12 @@ For multimodal video embeddings (frame + transcript), install extras:
 uv sync --extra multimodal
 ```
 
+For reusable text ingest into Qdrant:
+
+```bash
+uv sync --extra qdrant
+```
+
 Optional auto-transcription with Whisper:
 
 ```bash
@@ -45,6 +51,7 @@ This provides Facebook and Instagram export samples at `data/creators/syft-influ
 - Content deduplication (by URL and content hash)
 - Context enrichment (`[Facebook post by Author | Published: 2026-03-19]\n\ntext`)
 - JSONL, JSON, and text file export
+- Reusable text ingest API for Qdrant (remote URL or local on-disk path)
 - Multimodal video embedding script for local video files (sample frames + transcript fusion)
 
 ## API
@@ -62,6 +69,31 @@ corpus = syft_ingest.gather(
 ```
 
 Returns a `Corpus` object containing parsed `ContentItem` objects.
+
+The older `sources=["local"], local_dirs=[...]` API remains supported, but
+for app-to-library integrations the preferred entry point is a typed source spec:
+
+```python
+import syft_ingest
+
+corpus = syft_ingest.gather(
+    "Katy Stevens",
+    source_specs=[
+        syft_ingest.SocialProfileSource(
+            platform="instagram",
+            extractor="brightdata",
+            handle="katykicker",
+            profile_url="https://www.instagram.com/katykicker/",
+            raw_dirs=["./runs/20260403T093140Z/"],
+            start_date="2026-03-01",
+            source_slug="katykicker-instagram",
+        )
+    ],
+)
+```
+
+`SocialProfileSource` carries the creator/platform/source identity explicitly
+while still parsing local raw export directories.
 
 ### `corpus.export()` — output to file
 
@@ -85,6 +117,79 @@ uv run syft-ingest local-export \
   --input-dir ./data/creators/creator/instagram-brightdata \
   --format jsonl \
   --output ./output/creator_social_posts.jsonl
+```
+
+The CLI is a thin wrapper over the same library seam and is useful for manual
+runs, but application code should prefer importing `gather(...)` directly.
+
+### `ingest_jsonl()` — ingest a normalized manifest into Qdrant
+
+```python
+import syft_ingest
+
+report = syft_ingest.ingest_jsonl(
+    "./output/creator_social_posts.jsonl",
+    destination=syft_ingest.QdrantDestination(
+        collection_name="katy-stevens",
+        url="http://127.0.0.1:6333",
+    ),
+    embedding=syft_ingest.EmbeddingSpec(
+        backend="fastembed",
+        model="BAAI/bge-small-en-v1.5",
+    ),
+    chunking=syft_ingest.ChunkingSpec(
+        chunk_size=1000,
+        chunk_overlap=250,
+    ),
+)
+```
+
+For local smoke tests without a separate Qdrant service:
+
+```python
+destination = syft_ingest.QdrantDestination(
+    collection_name="katy-stevens-smoke",
+    path="/tmp/qdrant-katy-smoke",
+)
+```
+
+`IngestReport` returns:
+- `collection_name`
+- `documents_total`
+- `chunks_total`
+- `point_ids`
+- `embedding_contract`
+
+If the destination collection already exists, `ingest_jsonl(...)` validates that
+sampled points in that collection match the requested embedding contract. If you
+intend to switch models or backends for an existing collection, rerun with
+`reset_collection=True` instead of mixing embedding spaces.
+
+### `ingest_corpus()` — gather and ingest without writing JSONL first
+
+```python
+import syft_ingest
+
+corpus = syft_ingest.gather(
+    "Katy Stevens",
+    source_specs=[
+        syft_ingest.SocialProfileSource(
+            platform="instagram",
+            extractor="brightdata",
+            handle="katykicker",
+            profile_url="https://www.instagram.com/katykicker/",
+            raw_dirs=["./runs/20260403T093140Z/"],
+        )
+    ],
+)
+
+report = syft_ingest.ingest_corpus(
+    corpus,
+    destination=syft_ingest.QdrantDestination(
+        collection_name="katy-stevens",
+        url="http://127.0.0.1:6333",
+    ),
+)
 ```
 
 ### `corpus.all_items()` — access items in memory
