@@ -60,7 +60,7 @@ def test_register_and_get_fetcher():
 
 def test_get_unregistered_raises_key_error():
     """get_fetcher raises KeyError with platform name when no fetcher registered."""
-    with pytest.raises(KeyError, match="FACEBOOK"):
+    with pytest.raises(KeyError, match="facebook"):
         get_fetcher(Platform.FACEBOOK)
 
 
