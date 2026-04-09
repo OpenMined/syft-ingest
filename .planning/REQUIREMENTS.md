@@ -10,9 +10,9 @@ Requirements for this milestone. Each maps to roadmap phases.
 ### Content Fetcher Abstraction
 
 - [x] **CP-01**: Define `ContentFetcher` protocol/ABC with methods: `fetch(platform, urls) -> list[ContentItem]` — Strategy pattern
-- [ ] **CP-02**: Fetcher registry allows swapping implementations (Bright Data, Apify, AI agents) without changing callers
+- [x] **CP-02**: Fetcher registry allows swapping implementations (Bright Data, Apify, AI agents) without changing callers
 - [x] **CP-03**: Each fetcher encapsulates its own auth, polling, error handling — callers see only `ContentItem` output
-- [ ] **CP-04**: Fetcher selection configurable per-platform (e.g., YouTube=yt-dlp, FB=BrightData, IG=Apify)
+- [x] **CP-04**: Fetcher selection configurable per-platform (e.g., YouTube=yt-dlp, FB=BrightData, IG=Apify)
 
 ### Bright Data Fetcher (first ContentFetcher implementation)
 
@@ -92,9 +92,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 | Requirement | Phase | Status |
 |-------------|-------|--------|
 | CP-01 | Phase 1 | Complete |
-| CP-02 | Phase 1 | Pending |
+| CP-02 | Phase 1 | Complete |
 | CP-03 | Phase 1 | Complete |
-| CP-04 | Phase 1 | Pending |
+| CP-04 | Phase 1 | Complete |
 | BD-01 | Phase 2 | Pending |
 | BD-02 | Phase 2 | Pending |
 | BD-03 | Phase 2 | Pending |
