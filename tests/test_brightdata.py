@@ -1,4 +1,4 @@
-"""Tests for BrightDataFetcher: polling, timeout, and SDK error handling."""
+"""Tests for BrightDataFetcher: polling, timeout, SDK error handling, and response parsing."""
 
 from __future__ import annotations
 
@@ -8,10 +8,12 @@ import pytest
 
 from syft_ingest.core.fetcher import (
     FetchAuthError,
+    FetchEmptyResultError,
     FetchError,
     FetchRequest,
     FetchTimeoutError,
 )
+from syft_ingest.core.models import ArticleResult, SourceType, VideoResult
 from syft_ingest.core.url_router import Platform
 from syft_ingest.sources.brightdata import BrightDataFetcher
 
@@ -56,7 +58,19 @@ async def test_fetch_async_with_instagram_profile_success(brightdata_fetcher):
     mock_job = AsyncMock()
     mock_job.snapshot_id = "job-ig-001"
     mock_job.wait = AsyncMock()
-    mock_job.fetch = AsyncMock(return_value={"profiles": [{"username": "testuser"}]})
+    mock_job.fetch = AsyncMock(
+        return_value={
+            "profiles": [
+                {
+                    "username": "testuser",
+                    "name": "Test User",
+                    "bio": "Test bio",
+                    "followers_count": 100,
+                    "posts_count": 10,
+                }
+            ]
+        }
+    )
 
     mock_client = AsyncMock()
     mock_scraper = AsyncMock()
@@ -70,8 +84,9 @@ async def test_fetch_async_with_instagram_profile_success(brightdata_fetcher):
 
         assert result.remote_job_id == "job-ig-001"
         assert result.remote_status == "ready"
-        assert result.rows_fetched == 0
-        assert result.items == []
+        assert result.rows_fetched == 1
+        assert len(result.items) == 1
+        assert isinstance(result.items[0], ArticleResult)
 
         # Verify trigger was called with correct URL
         mock_scraper.profiles_trigger.assert_called_once_with(
@@ -97,7 +112,20 @@ async def test_fetch_async_with_facebook_profile_success(brightdata_fetcher):
     mock_job = AsyncMock()
     mock_job.snapshot_id = "job-fb-002"
     mock_job.wait = AsyncMock()
-    mock_job.fetch = AsyncMock(return_value={"posts": []})
+    mock_job.fetch = AsyncMock(
+        return_value={
+            "posts": [
+                {
+                    "id": "post-001",
+                    "message": "Test post",
+                    "created_time": "2026-01-01T12:00:00Z",
+                    "from": {"name": "Test User"},
+                    "like_count": 10,
+                    "comment_count": 2,
+                }
+            ]
+        }
+    )
 
     mock_client = AsyncMock()
     mock_scraper = AsyncMock()
@@ -111,6 +139,8 @@ async def test_fetch_async_with_facebook_profile_success(brightdata_fetcher):
 
         assert result.remote_job_id == "job-fb-002"
         assert result.remote_status == "ready"
+        assert result.rows_fetched == 1
+        assert len(result.items) == 1
 
         # Verify trigger was called
         mock_scraper.posts_by_profile_trigger.assert_called_once_with(
@@ -136,7 +166,19 @@ async def test_fetch_async_uses_default_timeout_and_poll_interval(brightdata_fet
     mock_job = AsyncMock()
     mock_job.snapshot_id = "job-default"
     mock_job.wait = AsyncMock()
-    mock_job.fetch = AsyncMock(return_value={})
+    mock_job.fetch = AsyncMock(
+        return_value={
+            "profiles": [
+                {
+                    "username": "testuser",
+                    "name": "Test",
+                    "bio": "Bio",
+                    "followers_count": 0,
+                    "posts_count": 0,
+                }
+            ]
+        }
+    )
 
     mock_client = AsyncMock()
     mock_scraper = AsyncMock()
@@ -416,7 +458,19 @@ def test_fetch_sync_wrapper_calls_async(brightdata_fetcher):
     mock_job = AsyncMock()
     mock_job.snapshot_id = "job-sync-test"
     mock_job.wait = AsyncMock()
-    mock_job.fetch = AsyncMock(return_value={})
+    mock_job.fetch = AsyncMock(
+        return_value={
+            "profiles": [
+                {
+                    "username": "testuser",
+                    "name": "Test",
+                    "bio": "Bio",
+                    "followers_count": 0,
+                    "posts_count": 0,
+                }
+            ]
+        }
+    )
 
     mock_client = AsyncMock()
     mock_scraper = AsyncMock()
@@ -430,6 +484,7 @@ def test_fetch_sync_wrapper_calls_async(brightdata_fetcher):
 
         assert result.remote_job_id == "job-sync-test"
         assert result.remote_status == "ready"
+        assert len(result.items) >= 1
 
 
 def test_fetch_sync_wrapper_propagates_fetch_timeout_error(brightdata_fetcher):
@@ -472,3 +527,256 @@ def test_fetch_sync_wrapper_propagates_fetch_auth_error(brightdata_fetcher):
 
         with pytest.raises(FetchAuthError):
             brightdata_fetcher.fetch(request)
+
+
+# ---- Parsing tests ----
+
+
+def test_parse_instagram_profile_response(brightdata_fetcher):
+    """Parse Instagram profile response into ArticleResult."""
+    raw_data = {
+        "profiles": [
+            {
+                "username": "testuser",
+                "name": "Test User",
+                "bio": "My bio",
+                "followers_count": 1000,
+                "posts_count": 50,
+                "profile_picture_url": "https://example.com/pic.jpg",
+            }
+        ]
+    }
+
+    items = brightdata_fetcher._parse_response(raw_data, "instagram")
+
+    assert len(items) == 1
+    assert isinstance(items[0], ArticleResult)
+    assert items[0].author == "Test User"
+    assert items[0].title == "testuser"
+    assert items[0].text == "My bio"
+    assert items[0].metadata["followers"] == 1000
+    assert items[0].metadata["posts"] == 50
+    assert items[0].source_type == SourceType.WEB
+
+
+def test_parse_instagram_posts_response(brightdata_fetcher):
+    """Parse Instagram posts response into ArticleResult with metadata."""
+    raw_data = {
+        "posts": [
+            {
+                "id": "123",
+                "username": "testuser",
+                "caption": "Great photo",
+                "likes_count": 100,
+                "comments_count": 5,
+                "shares_count": 2,
+                "created_at": "2026-01-01T12:00:00Z",
+                "media_urls": ["url1", "url2"],
+                "has_video": False,
+            }
+        ]
+    }
+
+    items = brightdata_fetcher._parse_response(raw_data, "instagram")
+
+    assert len(items) == 1
+    assert isinstance(items[0], ArticleResult)
+    assert items[0].text == "Great photo"
+    assert items[0].author == "testuser"
+    assert items[0].metadata["likes"] == 100
+    assert items[0].metadata["comments"] == 5
+    assert items[0].metadata["media_count"] == 2
+    assert items[0].published_at is not None
+
+
+def test_parse_instagram_video_post(brightdata_fetcher):
+    """Parse Instagram video post as VideoResult."""
+    raw_data = {
+        "posts": [
+            {
+                "id": "456",
+                "username": "testuser",
+                "caption": "Check this video",
+                "likes_count": 200,
+                "has_video": True,
+                "video_duration_seconds": 60,
+                "created_at": "2026-01-01T12:00:00Z",
+                "media_urls": ["video_url"],
+            }
+        ]
+    }
+
+    items = brightdata_fetcher._parse_response(raw_data, "instagram")
+
+    assert len(items) == 1
+    assert isinstance(items[0], VideoResult)
+    assert items[0].source_type == SourceType.YOUTUBE
+    assert items[0].duration_seconds == 60
+
+
+def test_parse_facebook_posts_response(brightdata_fetcher):
+    """Parse Facebook posts response into ArticleResult."""
+    raw_data = {
+        "posts": [
+            {
+                "id": "789",
+                "message": "My post",
+                "created_time": "2026-01-01T12:00:00Z",
+                "from": {"name": "Test Author"},
+                "like_count": 50,
+                "comment_count": 10,
+            }
+        ]
+    }
+
+    items = brightdata_fetcher._parse_response(raw_data, "facebook")
+
+    assert len(items) == 1
+    assert isinstance(items[0], ArticleResult)
+    assert items[0].author == "Test Author"
+    assert items[0].text == "My post"
+    assert items[0].metadata["likes"] == 50
+    assert items[0].metadata["comments"] == 10
+    assert items[0].published_at is not None
+
+
+def test_parse_facebook_video_response(brightdata_fetcher):
+    """Parse Facebook video post as VideoResult."""
+    raw_data = {
+        "posts": [
+            {
+                "id": "990",
+                "type": "video",
+                "message": "Check this",
+                "video": {"length": 120},
+                "created_time": "2026-01-01T12:00:00Z",
+                "from": {"name": "Author"},
+                "like_count": 30,
+            }
+        ]
+    }
+
+    items = brightdata_fetcher._parse_response(raw_data, "facebook")
+
+    assert len(items) == 1
+    assert isinstance(items[0], VideoResult)
+    assert items[0].source_type == SourceType.YOUTUBE
+    assert items[0].duration_seconds == 120
+
+
+def test_empty_response_returns_empty_list(brightdata_fetcher):
+    """Empty response returns empty list."""
+    items = brightdata_fetcher._parse_response({}, "instagram")
+    assert items == []
+
+    items = brightdata_fetcher._parse_response(None, "facebook")
+    assert items == []
+
+
+@pytest.mark.asyncio
+async def test_empty_result_error_in_fetch(brightdata_fetcher):
+    """FetchEmptyResultError is raised when parsing returns empty list."""
+    request = FetchRequest(
+        platform=Platform.INSTAGRAM,
+        extractor="brightdata",
+        urls=["https://instagram.com/test"],
+    )
+
+    mock_job = AsyncMock()
+    mock_job.snapshot_id = "job-empty"
+    mock_job.wait = AsyncMock()
+    mock_job.fetch = AsyncMock(return_value={})  # Empty response
+
+    mock_client = AsyncMock()
+    mock_scraper = AsyncMock()
+    mock_scraper.profiles_trigger = AsyncMock(return_value=mock_job)
+    mock_client.scrape.instagram = mock_scraper
+
+    with patch("syft_ingest.sources.brightdata.BrightDataClient") as mock_client_class:
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+
+        with pytest.raises(FetchEmptyResultError):
+            await brightdata_fetcher._fetch_async(request)
+
+
+def test_parse_error_handling_skips_bad_items(brightdata_fetcher):
+    """Parse errors skip bad items but keep good ones."""
+    raw_data = {
+        "posts": [
+            {"id": "good", "message": "OK", "from": {"name": "User"}},
+            {"id": "bad"},  # Missing required fields
+            {"id": "good2", "message": "Also OK", "from": {"name": "User2"}},
+        ]
+    }
+
+    items = brightdata_fetcher._parse_response(raw_data, "facebook")
+
+    # Should have at least the good items
+    assert len(items) >= 2
+    assert any(item.text == "OK" for item in items)
+    assert any(item.text == "Also OK" for item in items)
+
+
+def test_unparseable_date_handled_gracefully(brightdata_fetcher):
+    """Unparseable dates are handled gracefully (None, not exception)."""
+    raw_data = {
+        "posts": [
+            {
+                "id": "123",
+                "message": "Post",
+                "created_time": "invalid-date",
+                "from": {"name": "User"},
+            }
+        ]
+    }
+
+    items = brightdata_fetcher._parse_response(raw_data, "facebook")
+
+    assert len(items) == 1
+    assert items[0].published_at is None  # Not parsed, but no exception
+
+
+@pytest.mark.asyncio
+async def test_end_to_end_instagram_fetch_with_parsing(brightdata_fetcher):
+    """End-to-end Instagram fetch with full parsing."""
+    request = FetchRequest(
+        platform=Platform.INSTAGRAM,
+        extractor="brightdata",
+        urls=["https://instagram.com/testuser"],
+    )
+
+    mock_job = AsyncMock()
+    mock_job.snapshot_id = "job-ig-e2e"
+    mock_job.wait = AsyncMock()
+    mock_job.fetch = AsyncMock(
+        return_value={
+            "profiles": [
+                {
+                    "username": "testuser",
+                    "name": "Test User",
+                    "bio": "My bio",
+                    "followers_count": 1000,
+                    "posts_count": 50,
+                }
+            ]
+        }
+    )
+
+    mock_client = AsyncMock()
+    mock_scraper = AsyncMock()
+    mock_scraper.profiles_trigger = AsyncMock(return_value=mock_job)
+    mock_client.scrape.instagram = mock_scraper
+
+    with patch("syft_ingest.sources.brightdata.BrightDataClient") as mock_client_class:
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+
+        result = await brightdata_fetcher._fetch_async(request)
+
+        assert result.remote_job_id == "job-ig-e2e"
+        assert result.remote_status == "ready"
+        assert len(result.items) == 1
+        assert isinstance(result.items[0], ArticleResult)
+        assert result.items[0].author == "Test User"
+        assert result.rows_fetched == 1
+        assert result.fetched_at is not None
+        assert result.content_hashes is not None

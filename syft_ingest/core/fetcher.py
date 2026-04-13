@@ -15,6 +15,7 @@ all failures are wrapped in domain-specific ``FetchError`` subclasses.
 
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
@@ -55,6 +56,12 @@ class FetchResult(BaseModel):
     remote_job_id: str | None = None
     remote_status: str | None = None
     artifact_paths: dict[str, Path] = Field(default_factory=dict)
+    fetched_at: datetime | None = (
+        None  # When the fetch completed (Phase 6: delta tracking)
+    )
+    content_hashes: dict[str, str] = Field(
+        default_factory=dict
+    )  # SHA256 hashes for deduplication
 
 
 @runtime_checkable

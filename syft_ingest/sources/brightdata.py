@@ -12,16 +12,22 @@ Exceptions from the SDK are wrapped in domain-specific FetchError subclasses:
 from __future__ import annotations
 
 import asyncio as asyncio_module
+import hashlib
+import os
+from datetime import UTC, datetime
+from typing import Any
 
 from loguru import logger
 
 from syft_ingest.core.fetcher import (
     FetchAuthError,
+    FetchEmptyResultError,
     FetchError,
     FetchRequest,
     FetchResult,
     FetchTimeoutError,
 )
+from syft_ingest.core.models import ArticleResult, ContentItem, SourceType, VideoResult
 
 # Import the brightdata SDK
 try:
@@ -61,15 +67,14 @@ class BrightDataFetcher:
                    from BRIGHTDATA_API_TOKEN environment variable.
 
         Raises:
-            ValueError: If no token provided and environment variable not set.
+            FetchAuthError: If no token provided and environment variable not set.
         """
-        import os
-
         self._token = token or os.getenv("BRIGHTDATA_API_TOKEN")
         if not self._token:
-            raise ValueError(
+            raise FetchAuthError(
                 "No Bright Data API token provided. Set BRIGHTDATA_API_TOKEN "
-                "environment variable or pass token= to constructor."
+                "environment variable or pass token= to constructor.",
+                platform="bright-data",
             )
 
     def fetch(self, request: FetchRequest) -> FetchResult:
@@ -183,12 +188,32 @@ class BrightDataFetcher:
                 raw_data = await job.fetch()
                 logger.debug("Fetched {bytes} bytes from job", bytes=len(str(raw_data)))
 
-                # Return FetchResult with remote tracking (items empty for Plan 03)
+                # Parse response into ContentItem list
+                items = self._parse_response(raw_data, platform_name)
+
+                # Raise FetchEmptyResultError if no items parsed
+                if not items:
+                    raise FetchEmptyResultError(
+                        f"No content items found in {platform_name} response",
+                        platform=platform_name,
+                    )
+
+                # Return FetchResult with parsed items
+                fetched_at = datetime.now(UTC)
+                content_hashes = {
+                    item.url or item.title: hashlib.sha256(
+                        item.title.encode()
+                    ).hexdigest()
+                    for item in items
+                }
+
                 return FetchResult(
-                    items=[],  # Filled in Plan 03
-                    rows_fetched=0,
+                    items=items,
+                    rows_fetched=len(items),
                     remote_job_id=job.snapshot_id,
                     remote_status="ready",
+                    fetched_at=fetched_at,
+                    content_hashes=content_hashes,
                 )
 
         except ValidationError as e:
@@ -243,3 +268,241 @@ class BrightDataFetcher:
             raise FetchError(
                 f"Unexpected error: {str(e)}", platform=platform_name
             ) from e
+
+    def _parse_response(self, raw_data: Any, platform: str) -> list[ContentItem]:
+        """Parse raw Bright Data response into ContentItem list.
+
+        Handles platform-specific field extraction and error handling.
+
+        Args:
+            raw_data: Raw response from Bright Data API (dict-like).
+            platform: Platform name ("instagram" or "facebook").
+
+        Returns:
+            List of ContentItem subclass instances (ArticleResult or VideoResult).
+            Empty list if response is empty or None.
+        """
+        if not raw_data:
+            return []
+
+        items: list[ContentItem] = []
+
+        try:
+            if platform == "instagram":
+                items = self._parse_instagram_response(raw_data)
+            elif platform == "facebook":
+                items = self._parse_facebook_response(raw_data)
+            else:
+                logger.warning("Unknown platform for parsing: {}", platform)
+        except Exception as e:
+            logger.error("Error parsing {} response: {}", platform, e, exc_info=True)
+
+        logger.info(
+            "Parsed {n} items from {platform} response",
+            n=len(items),
+            platform=platform,
+        )
+        return items
+
+    def _parse_instagram_response(self, raw_data: dict[str, Any]) -> list[ContentItem]:
+        """Parse Instagram scraper response into ContentItem list.
+
+        Handles both profile and post responses.
+
+        Args:
+            raw_data: Response dict from Instagram scraper.
+
+        Returns:
+            List of ArticleResult items.
+        """
+        items: list[ContentItem] = []
+
+        # Parse profiles if present
+        if "profiles" in raw_data:
+            for profile in raw_data.get("profiles", []):
+                try:
+                    username = profile.get("username", "Unknown")
+                    name = profile.get("name", username)
+                    bio = profile.get("bio", "")
+                    followers = profile.get("followers_count", 0)
+                    posts_count = profile.get("posts_count", 0)
+                    profile_picture_url = profile.get("profile_picture_url")
+
+                    item = ArticleResult(
+                        title=username,
+                        author=name,
+                        text=bio,
+                        url=f"https://instagram.com/{username}",
+                        source_type=SourceType.WEB,
+                        published_at=None,
+                        metadata={
+                            "followers": followers,
+                            "posts": posts_count,
+                            "profile_picture": profile_picture_url,
+                        },
+                    )
+                    items.append(item)
+                except Exception as e:
+                    logger.warning("Failed to parse Instagram profile: {}", e)
+
+        # Parse posts if present
+        if "posts" in raw_data:
+            for post in raw_data.get("posts", []):
+                try:
+                    post_id = post.get("id", "Unknown Post")
+                    username = post.get("username", "Unknown")
+                    caption = post.get("caption", "")
+                    likes = post.get("likes_count", 0)
+                    comments = post.get("comments_count", 0)
+                    shares = post.get("shares_count", 0)
+                    created_at_str = post.get("created_at")
+                    media_urls = post.get("media_urls", [])
+                    has_video = post.get("has_video", False)
+                    video_duration = post.get("video_duration_seconds")
+
+                    # Parse datetime if provided
+                    published_at = None
+                    if created_at_str:
+                        try:
+                            published_at = datetime.fromisoformat(
+                                created_at_str.replace("Z", "+00:00")
+                            )
+                        except (ValueError, AttributeError):
+                            logger.debug("Could not parse date {}", created_at_str)
+
+                    metadata = {
+                        "likes": likes,
+                        "comments": comments,
+                        "shares": shares,
+                        "media_count": len(media_urls),
+                    }
+
+                    if has_video or video_duration:
+                        item = VideoResult(
+                            title=post_id,
+                            author=username,
+                            text=caption,
+                            url=post.get("post_url"),
+                            source_type=SourceType.YOUTUBE,
+                            published_at=published_at,
+                            metadata=metadata,
+                            duration_seconds=video_duration,
+                        )
+                    else:
+                        item = ArticleResult(
+                            title=post_id,
+                            author=username,
+                            text=caption,
+                            url=post.get("post_url"),
+                            source_type=SourceType.WEB,
+                            published_at=published_at,
+                            metadata=metadata,
+                        )
+
+                    items.append(item)
+                except Exception as e:
+                    logger.warning("Failed to parse Instagram post: {}", e)
+
+        return items
+
+    def _parse_facebook_response(self, raw_data: dict[str, Any]) -> list[ContentItem]:
+        """Parse Facebook scraper response into ContentItem list.
+
+        Args:
+            raw_data: Response dict from Facebook scraper.
+
+        Returns:
+            List of ArticleResult or VideoResult items.
+        """
+        items: list[ContentItem] = []
+
+        for post in raw_data.get("posts", []):
+            try:
+                post_id = post.get("id", "Unknown Post")
+                message = post.get("message", "")
+                story = post.get("story", "")
+                text = message or story
+                created_time_str = post.get("created_time")
+                permalink_url = post.get("permalink_url") or post.get("link", "")
+
+                # Extract author
+                author = "Unknown"
+                if isinstance(post.get("from"), dict):
+                    author = post["from"].get("name", "Unknown")
+                elif isinstance(post.get("author"), str):
+                    author = post["author"]
+
+                # Parse datetime if provided
+                published_at = None
+                if created_time_str:
+                    try:
+                        published_at = datetime.fromisoformat(
+                            created_time_str.replace("Z", "+00:00")
+                        )
+                    except (ValueError, AttributeError):
+                        logger.debug("Could not parse date {}", created_time_str)
+
+                # Extract engagement metrics
+                likes_count = 0
+                if isinstance(post.get("likes"), dict):
+                    likes_count = len(post["likes"].get("data", []))
+                elif isinstance(post.get("like_count"), int):
+                    likes_count = post["like_count"]
+
+                comments_count = 0
+                if isinstance(post.get("comments"), dict):
+                    comments_count = len(post["comments"].get("data", []))
+                elif isinstance(post.get("comment_count"), int):
+                    comments_count = post["comment_count"]
+
+                shares_count = 0
+                if isinstance(post.get("shares"), dict):
+                    shares_count = post["shares"].get("count", 0)
+
+                metadata = {
+                    "likes": likes_count,
+                    "comments": comments_count,
+                    "shares": shares_count,
+                }
+
+                # Check for video
+                is_video = (
+                    post.get("type") == "video"
+                    or "video" in post
+                    or post.get("is_video", False)
+                )
+
+                if is_video:
+                    video_data = post.get("video", {})
+                    duration = (
+                        video_data.get("length")
+                        if isinstance(video_data, dict)
+                        else None
+                    )
+
+                    item = VideoResult(
+                        title=post_id,
+                        author=author,
+                        text=text,
+                        url=permalink_url,
+                        source_type=SourceType.YOUTUBE,
+                        published_at=published_at,
+                        metadata=metadata,
+                        duration_seconds=duration,
+                    )
+                else:
+                    item = ArticleResult(
+                        title=post_id,
+                        author=author,
+                        text=text,
+                        url=permalink_url,
+                        source_type=SourceType.WEB,
+                        published_at=published_at,
+                        metadata=metadata,
+                    )
+
+                items.append(item)
+            except Exception as e:
+                logger.warning("Failed to parse Facebook post: {}", e)
+
+        return items
