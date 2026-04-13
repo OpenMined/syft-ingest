@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock, patch
+
 import pytest
 
 from syft_ingest.core.fetcher import ContentFetcher, FetchAuthError, FetchRequest
@@ -56,18 +58,36 @@ class TestBrightDataFetcherAuth:
         fetcher = BrightDataFetcher(token=override_token)
         assert fetcher._token == override_token
 
-    def test_fetch_accepts_fetch_request(self, monkeypatch):
+    @patch("syft_ingest.sources.brightdata.BrightDataClient")
+    def test_fetch_accepts_fetch_request(self, mock_client_class, monkeypatch):
         """Verify fetch() method accepts FetchRequest and has correct signature.
 
         Tests that the fetch() method exists, accepts a FetchRequest,
-        and currently raises NotImplementedError (since _fetch_async is a stub).
+        and returns a FetchResult via the sync/async bridge.
         """
         monkeypatch.setenv("BRIGHTDATA_API_TOKEN", "test-token")
+
+        # Setup mock
+        mock_job = AsyncMock()
+        mock_job.snapshot_id = "job-test"
+        mock_job.wait = AsyncMock()
+        mock_job.fetch = AsyncMock(return_value={"profiles": []})
+
+        mock_client = AsyncMock()
+        mock_scraper = AsyncMock()
+        mock_scraper.profiles_trigger = AsyncMock(return_value=mock_job)
+        mock_client.scrape.instagram = mock_scraper
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+
         fetcher = BrightDataFetcher()
         request = FetchRequest(
             platform=Platform.INSTAGRAM,
             extractor="bright-data",
             urls=["https://www.instagram.com/testuser"],
         )
-        with pytest.raises(NotImplementedError):
+
+        # Empty response triggers FetchEmptyResultError
+        from syft_ingest.core.fetcher import FetchEmptyResultError
+
+        with pytest.raises(FetchEmptyResultError):
             fetcher.fetch(request)

@@ -13,7 +13,12 @@ from syft_ingest.core.fetcher import (
     FetchRequest,
     FetchTimeoutError,
 )
-from syft_ingest.core.models import ArticleResult, SourceType, VideoResult
+from syft_ingest.core.models import (
+    ProfileResult,
+    ReelResult,
+    SocialPostResult,
+    SourceType,
+)
 from syft_ingest.core.url_router import Platform
 from syft_ingest.sources.brightdata import BrightDataFetcher
 
@@ -86,7 +91,7 @@ async def test_fetch_async_with_instagram_profile_success(brightdata_fetcher):
         assert result.remote_status == "ready"
         assert result.rows_fetched == 1
         assert len(result.items) == 1
-        assert isinstance(result.items[0], ArticleResult)
+        assert isinstance(result.items[0], ProfileResult)
 
         # Verify trigger was called with correct URL
         mock_scraper.profiles_trigger.assert_called_once_with(
@@ -533,7 +538,7 @@ def test_fetch_sync_wrapper_propagates_fetch_auth_error(brightdata_fetcher):
 
 
 def test_parse_instagram_profile_response(brightdata_fetcher):
-    """Parse Instagram profile response into ArticleResult."""
+    """Parse Instagram profile response into ProfileResult."""
     raw_data = {
         "profiles": [
             {
@@ -550,17 +555,17 @@ def test_parse_instagram_profile_response(brightdata_fetcher):
     items = brightdata_fetcher._parse_response(raw_data, "instagram")
 
     assert len(items) == 1
-    assert isinstance(items[0], ArticleResult)
+    assert isinstance(items[0], ProfileResult)
     assert items[0].author == "Test User"
     assert items[0].title == "testuser"
     assert items[0].text == "My bio"
-    assert items[0].metadata["followers"] == 1000
-    assert items[0].metadata["posts"] == 50
-    assert items[0].source_type == SourceType.WEB
+    assert items[0].followers_count == 1000
+    assert items[0].posts_count == 50
+    assert items[0].source_type == SourceType.INSTAGRAM
 
 
 def test_parse_instagram_posts_response(brightdata_fetcher):
-    """Parse Instagram posts response into ArticleResult with metadata."""
+    """Parse Instagram posts response into SocialPostResult with metadata."""
     raw_data = {
         "posts": [
             {
@@ -580,17 +585,18 @@ def test_parse_instagram_posts_response(brightdata_fetcher):
     items = brightdata_fetcher._parse_response(raw_data, "instagram")
 
     assert len(items) == 1
-    assert isinstance(items[0], ArticleResult)
+    assert isinstance(items[0], SocialPostResult)
     assert items[0].text == "Great photo"
     assert items[0].author == "testuser"
-    assert items[0].metadata["likes"] == 100
-    assert items[0].metadata["comments"] == 5
-    assert items[0].metadata["media_count"] == 2
+    assert items[0].likes_count == 100
+    assert items[0].comments_count == 5
+    assert len(items[0].media_urls) == 2
     assert items[0].published_at is not None
+    assert items[0].source_type == SourceType.INSTAGRAM
 
 
 def test_parse_instagram_video_post(brightdata_fetcher):
-    """Parse Instagram video post as VideoResult."""
+    """Parse Instagram video post as ReelResult."""
     raw_data = {
         "posts": [
             {
@@ -609,13 +615,14 @@ def test_parse_instagram_video_post(brightdata_fetcher):
     items = brightdata_fetcher._parse_response(raw_data, "instagram")
 
     assert len(items) == 1
-    assert isinstance(items[0], VideoResult)
-    assert items[0].source_type == SourceType.YOUTUBE
+    assert isinstance(items[0], ReelResult)
+    assert items[0].source_type == SourceType.INSTAGRAM
     assert items[0].duration_seconds == 60
+    assert items[0].likes_count == 200
 
 
 def test_parse_facebook_posts_response(brightdata_fetcher):
-    """Parse Facebook posts response into ArticleResult."""
+    """Parse Facebook posts response into SocialPostResult."""
     raw_data = {
         "posts": [
             {
@@ -632,16 +639,17 @@ def test_parse_facebook_posts_response(brightdata_fetcher):
     items = brightdata_fetcher._parse_response(raw_data, "facebook")
 
     assert len(items) == 1
-    assert isinstance(items[0], ArticleResult)
+    assert isinstance(items[0], SocialPostResult)
     assert items[0].author == "Test Author"
     assert items[0].text == "My post"
-    assert items[0].metadata["likes"] == 50
-    assert items[0].metadata["comments"] == 10
+    assert items[0].likes_count == 50
+    assert items[0].comments_count == 10
     assert items[0].published_at is not None
+    assert items[0].source_type == SourceType.FACEBOOK
 
 
 def test_parse_facebook_video_response(brightdata_fetcher):
-    """Parse Facebook video post as VideoResult."""
+    """Parse Facebook video post as ReelResult."""
     raw_data = {
         "posts": [
             {
@@ -659,9 +667,10 @@ def test_parse_facebook_video_response(brightdata_fetcher):
     items = brightdata_fetcher._parse_response(raw_data, "facebook")
 
     assert len(items) == 1
-    assert isinstance(items[0], VideoResult)
-    assert items[0].source_type == SourceType.YOUTUBE
+    assert isinstance(items[0], ReelResult)
+    assert items[0].source_type == SourceType.FACEBOOK
     assert items[0].duration_seconds == 120
+    assert items[0].likes_count == 30
 
 
 def test_empty_response_returns_empty_list(brightdata_fetcher):
@@ -775,7 +784,7 @@ async def test_end_to_end_instagram_fetch_with_parsing(brightdata_fetcher):
         assert result.remote_job_id == "job-ig-e2e"
         assert result.remote_status == "ready"
         assert len(result.items) == 1
-        assert isinstance(result.items[0], ArticleResult)
+        assert isinstance(result.items[0], ProfileResult)
         assert result.items[0].author == "Test User"
         assert result.rows_fetched == 1
         assert result.fetched_at is not None
