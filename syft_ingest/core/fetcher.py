@@ -15,13 +15,59 @@ all failures are wrapped in domain-specific ``FetchError`` subclasses.
 
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from syft_ingest.core.models import ContentItem
 from syft_ingest.core.url_router import Platform
+
+
+class FetchConfig(BaseModel):
+    """Configuration options for content fetching.
+
+    Platform-agnostic config model that validates options for all fetchers.
+    Each fetcher uses only the options relevant to its platform.
+
+    YouTube (yt-dlp):
+        socket_timeout: Network timeout in seconds (default: 30)
+        playlistend: Max videos from channel/playlist (default: 50)
+        download_full_video: Enable full video download (default: false)
+
+    Instagram/Facebook (BrightData):
+        timeout: Total scrape job timeout in seconds (default: 180)
+        poll_interval: Check job completion every N seconds (default: 5)
+        posts_limit: Limit posts fetched for testing (default: no limit)
+    """
+
+    # YouTube options
+    socket_timeout: int | None = Field(
+        default=None, ge=1, description="Network timeout in seconds"
+    )
+    playlistend: int | None = Field(
+        default=None, ge=1, description="Max videos from channel/playlist"
+    )
+    download_full_video: bool = Field(
+        default=False, description="Enable full video download"
+    )
+
+    # BrightData options
+    timeout: int | None = Field(
+        default=None, ge=1, description="Scrape job timeout in seconds"
+    )
+    poll_interval: int | None = Field(
+        default=None, ge=1, description="Job status check interval in seconds"
+    )
+    posts_limit: int | None = Field(
+        default=None, ge=1, description="Limit posts fetched (for testing)"
+    )
+
+    model_config = ConfigDict(
+        extra="allow",  # Allow extra fields for forward compatibility
+        validate_assignment=True,  # Validate on assignment
+    )
 
 
 class FetchRequest(BaseModel):
@@ -31,10 +77,34 @@ class FetchRequest(BaseModel):
     when starting a sync job: what platform/extractor to use, which profile or
     URLs to fetch, optional source identity, date window, and extractor-specific
     knobs carried in ``config``.
+
+    Simplified API: ``platform`` and ``extractor`` are auto-detected and optional.
+    ``config`` is validated via FetchConfig model with IDE support.
+
+    Examples:
+        # Minimal: just URLs
+        FetchRequest(
+            platform="youtube",
+            urls=["https://www.youtube.com/@user"]
+        )
+
+        # With config options (validated)
+        FetchRequest(
+            platform="youtube",
+            urls=["https://www.youtube.com/@user"],
+            config={"playlistend": 10, "socket_timeout": 60}
+        )
+
+        # Instagram with post limit for testing
+        FetchRequest(
+            platform="instagram",
+            urls=["https://www.instagram.com/user/"],
+            config={"posts_limit": 5}
+        )
     """
 
-    platform: Platform
-    extractor: str = Field(min_length=1)
+    platform: Platform | str  # Accept string (e.g. "instagram") or Platform enum
+    extractor: str | None = None  # Auto-detected from platform if not provided
     urls: list[str] = Field(min_length=1)
     source_kind: str | None = None
     handle: str | None = None
@@ -44,7 +114,47 @@ class FetchRequest(BaseModel):
     start_date: str | None = None
     end_date: str | None = None
     output_dir: Path | None = None
-    config: dict[str, Any] = Field(default_factory=dict)
+    config: FetchConfig | dict[str, Any] = Field(
+        default_factory=dict,
+        description="Fetcher-specific options (validated via FetchConfig, converted to dict)",
+    )
+
+    @field_validator("platform", mode="before")
+    @classmethod
+    def validate_platform(cls, v: Platform | str) -> Platform:
+        """Accept platform as string name (e.g. 'instagram') or Platform enum."""
+        if isinstance(v, Platform):
+            return v
+        if isinstance(v, str):
+            # Convert string to Platform enum
+            try:
+                return Platform(v.lower())
+            except ValueError:
+                valid = ", ".join(p.value for p in Platform)
+                raise ValueError(f"Invalid platform '{v}'. Valid: {valid}") from None
+        raise ValueError(f"platform must be Platform enum or string, got {type(v)}")
+
+    @model_validator(mode="after")
+    def auto_detect_extractor(self) -> FetchRequest:
+        """Auto-detect extractor from platform if not provided."""
+        if self.extractor is None:
+            # Map platform to default extractor
+            extractor_map = {
+                Platform.YOUTUBE: "yt-dlp",
+                Platform.INSTAGRAM: "brightdata",
+                Platform.FACEBOOK: "brightdata",
+                Platform.TIKTOK: "brightdata",
+                Platform.LOCAL: "local",
+            }
+            self.extractor = extractor_map.get(self.platform)
+
+        # Convert FetchConfig to dict for fetcher compatibility
+        if isinstance(self.config, FetchConfig):
+            self.config = self.config.model_dump(
+                exclude_none=True, exclude_defaults=True
+            )
+
+        return self
 
 
 class FetchResult(BaseModel):
@@ -55,6 +165,12 @@ class FetchResult(BaseModel):
     remote_job_id: str | None = None
     remote_status: str | None = None
     artifact_paths: dict[str, Path] = Field(default_factory=dict)
+    fetched_at: datetime | None = (
+        None  # When the fetch completed (Phase 6: delta tracking)
+    )
+    content_hashes: dict[str, str] = Field(
+        default_factory=dict
+    )  # SHA256 hashes for deduplication
 
 
 @runtime_checkable

@@ -11,18 +11,23 @@ from __future__ import annotations
 
 import re
 from enum import Enum
+from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field
 
+if TYPE_CHECKING:
+    from syft_ingest.core.fetcher import ContentFetcher
+
 
 class Platform(str, Enum):
-    """Social platforms we can ingest content from."""
+    """Platforms we can ingest content from."""
 
     FACEBOOK = "facebook"
     INSTAGRAM = "instagram"
     YOUTUBE = "youtube"
     TIKTOK = "tiktok"
+    LOCAL = "local"
 
 
 class AcquisitionMethod(str, Enum):
@@ -30,6 +35,7 @@ class AcquisitionMethod(str, Enum):
 
     YT_DLP = "yt-dlp"
     BRIGHT_DATA = "bright_data"
+    LOCAL = "local"
 
 
 # Maps each platform to its acquisition method.
@@ -38,6 +44,7 @@ _PLATFORM_ACQUISITION: dict[Platform, AcquisitionMethod] = {
     Platform.INSTAGRAM: AcquisitionMethod.BRIGHT_DATA,
     Platform.YOUTUBE: AcquisitionMethod.YT_DLP,
     Platform.TIKTOK: AcquisitionMethod.BRIGHT_DATA,
+    Platform.LOCAL: AcquisitionMethod.LOCAL,
 }
 
 
@@ -122,8 +129,15 @@ _TRACKING_PARAMS = frozenset(
 )
 
 
-def _normalize_url(url: str, parsed: urlparse) -> str:  # type: ignore[override]
-    """Strip tracking parameters and fragments, lowercase the host."""
+def _normalize_url(parsed: urlparse) -> str:
+    """Strip tracking parameters and fragments, lowercase the host.
+
+    Args:
+        parsed: Parsed URL components from urlparse.
+
+    Returns:
+        Normalized URL string without tracking parameters or fragments.
+    """
     from urllib.parse import parse_qs, urlencode, urlunparse
 
     clean_params = {
@@ -183,7 +197,7 @@ def resolve_url(url: str) -> RouteResult:
     if platform is None:
         raise UnsupportedPlatformError(url, parsed.netloc)
 
-    normalized = _normalize_url(url, parsed)
+    normalized = _normalize_url(parsed)
 
     return RouteResult(
         platform=platform,
@@ -205,3 +219,64 @@ def supported_platforms() -> list[dict[str, str]]:
         }
         for p in Platform
     ]
+
+
+def get_fetcher_for_url(url: str, default_method: str | None = None) -> ContentFetcher:
+    """Resolve URL to Platform, then dispatch to fetcher registry.
+
+    This bridges the URL router (resolves URL → Platform) with the fetcher
+    registry (provides Platform → ContentFetcher mapping). Callers provide
+    a raw creator URL, and get back a ready-to-use ContentFetcher instance.
+
+    Flow:
+    1. resolve_url(url) → RouteResult with Platform
+    2. get_fetcher(platform, default_method) → ContentFetcher instance
+
+    Args:
+        url: Creator URL (YouTube, Instagram, Facebook, or web article)
+        default_method: Optional fetcher method name (e.g., "yt-dlp", "brightdata")
+                       If not provided, uses platform default from RouteResult
+
+    Returns:
+        ContentFetcher instance for the platform
+
+    Raises:
+        InvalidURLError: If the URL is not a valid HTTP(S) URL
+        UnsupportedPlatformError: If the URL's platform is not supported
+        ValueError: If no default fetcher method is configured for the platform
+        KeyError: If no fetcher is registered for the resolved platform/method
+    """
+    from syft_ingest.core.fetcher import ContentFetcher
+    from syft_ingest.core.registry import get_fetcher
+
+    # Resolve URL to platform
+    route_result: RouteResult = resolve_url(url)
+    platform = route_result.platform
+
+    # Use provided method or look up default for this platform
+    if default_method is None:
+        # Map AcquisitionMethod enum to extractor string names
+        method_mapping = {
+            AcquisitionMethod.YT_DLP: "yt-dlp",
+            AcquisitionMethod.BRIGHT_DATA: "brightdata",
+        }
+        # Use the acquisition_method from resolve_url result (avoids private state access)
+        acquisition_method = route_result.acquisition_method
+        default_method = method_mapping.get(acquisition_method)
+
+        if not default_method:
+            raise ValueError(
+                f"No default fetcher method configured for platform {platform.value}"
+            )
+
+    # Get the fetcher from the registry
+    fetcher = get_fetcher(platform, default_method)
+
+    # Verify it satisfies the ContentFetcher protocol
+    if not isinstance(fetcher, ContentFetcher):
+        raise TypeError(
+            f"Registered fetcher for {platform.value}/{default_method} "
+            f"does not satisfy ContentFetcher protocol"
+        )
+
+    return fetcher

@@ -18,9 +18,9 @@ def test_e2e_facebook_gather_and_export_jsonl(fb_export_path, output_dir):
 
     output_file = output_dir / "fb.jsonl"
     corpus = syft_ingest.gather(
-        "Syft Influencer Test",
-        sources=["local"],
-        local_dirs=[str(fb_export_path)],
+        "local",
+        urls=[str(fb_export_path)],
+        author="Syft Influencer Test",
     )
     corpus.export("jsonl", output=str(output_file))
 
@@ -72,12 +72,11 @@ def test_e2e_brightdata_facebook_gather_and_export_jsonl(tmp_path, output_dir):
 
     output_file = output_dir / "fb-brightdata.jsonl"
     corpus = syft_ingest.gather(
-        "Syft Influencer Test",
-        sources=["local"],
-        local_dirs=[str(brightdata_dir)],
+        "local",
+        urls=[str(brightdata_dir)],
+        author="Syft Influencer Test",
     )
     corpus.export("jsonl", output=str(output_file))
-
     lines = output_file.read_text().strip().splitlines()
     assert len(lines) == 1
     record = json.loads(lines[0])
@@ -145,9 +144,9 @@ def test_e2e_brightdata_instagram_gather_and_export_jsonl(tmp_path, output_dir):
 
     output_file = output_dir / "ig-brightdata.jsonl"
     corpus = syft_ingest.gather(
-        "Syft Influencer Test",
-        sources=["local"],
-        local_dirs=[str(brightdata_dir)],
+        "local",
+        urls=[str(brightdata_dir)],
+        author="Syft Influencer Test",
     )
     corpus.export("jsonl", output=str(output_file))
 
@@ -204,9 +203,9 @@ def test_e2e_brightdata_instagram_export_preserves_rich_media_fields(
 
     output_file = output_dir / "ig-brightdata-rich.jsonl"
     corpus = syft_ingest.gather(
-        "Syft Influencer Test",
-        sources=["local"],
-        local_dirs=[str(brightdata_dir)],
+        "local",
+        urls=[str(brightdata_dir)],
+        author="Syft Influencer Test",
     )
     corpus.export("jsonl", output=str(output_file))
 
@@ -227,9 +226,9 @@ def test_e2e_combined_gather(fb_export_path, ig_export_path, output_dir):
 
     output_file = output_dir / "all.jsonl"
     corpus = syft_ingest.gather(
-        "Syft Influencer Test",
-        sources=["local"],
-        local_dirs=[str(fb_export_path), str(ig_export_path)],
+        "local",
+        urls=[str(fb_export_path), str(ig_export_path)],
+        author="Syft Influencer Test",
     )
     corpus.export("jsonl", output=str(output_file))
 
@@ -247,9 +246,7 @@ def test_e2e_no_duplicate_urls_in_facebook(fb_export_path):
     if not fb_export_path.exists():
         pytest.skip("Test data not available")
 
-    corpus = syft_ingest.gather(
-        "Test", sources=["local"], local_dirs=[str(fb_export_path)]
-    )
+    corpus = syft_ingest.gather("local", urls=[str(fb_export_path)], author="Test")
     urls = [item.url for item in corpus.all_items() if item.url]
     assert len(urls) == len(set(urls)), f"Duplicate URLs found: {urls}"
 
@@ -259,9 +256,9 @@ def test_e2e_no_bare_url_posts(fb_export_path, ig_export_path):
         pytest.skip("Test data not available")
 
     corpus = syft_ingest.gather(
-        "Test",
-        sources=["local"],
-        local_dirs=[str(fb_export_path), str(ig_export_path)],
+        "local",
+        urls=[str(fb_export_path), str(ig_export_path)],
+        author="Test",
     )
     from syft_ingest.sources._meta_utils import is_bare_url
 
@@ -277,9 +274,7 @@ def test_e2e_export_json(fb_export_path, output_dir):
         pytest.skip("Test data not available")
 
     output_file = output_dir / "fb.json"
-    corpus = syft_ingest.gather(
-        "Test", sources=["local"], local_dirs=[str(fb_export_path)]
-    )
+    corpus = syft_ingest.gather("local", urls=[str(fb_export_path)], author="Test")
     corpus.export("json", output=str(output_file))
 
     data = json.loads(output_file.read_text())
@@ -292,9 +287,7 @@ def test_e2e_export_text(fb_export_path, output_dir):
         pytest.skip("Test data not available")
 
     text_dir = output_dir / "texts"
-    corpus = syft_ingest.gather(
-        "Test", sources=["local"], local_dirs=[str(fb_export_path)]
-    )
+    corpus = syft_ingest.gather("local", urls=[str(fb_export_path)], author="Test")
     corpus.export("text", output_dir=str(text_dir))
 
     txt_files = list(text_dir.glob("*.txt"))
@@ -325,12 +318,11 @@ def test_e2e_stable_ids_are_deterministic_and_unique(fb_export_path, output_dir)
 
 
 def test_e2e_unknown_source_does_not_crash():
-    corpus = syft_ingest.gather("Test", sources=["nonexistent"])
-    assert len(corpus.all_items()) == 0
+    # With new API, invalid platforms raise ValueError (stricter validation)
+    with pytest.raises(ValueError):
+        syft_ingest.gather("nonexistent", urls=[])
 
 
 def test_e2e_empty_local_dirs():
-    corpus = syft_ingest.gather(
-        "Test", sources=["local"], local_dirs=["/nonexistent/path"]
-    )
+    corpus = syft_ingest.gather("local", urls=["/nonexistent/path"], author="Test")
     assert len(corpus.all_items()) == 0

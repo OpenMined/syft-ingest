@@ -1,6 +1,7 @@
 from syft_ingest.core.fetcher import (
     ContentFetcher,
     FetchAuthError,
+    FetchConfig,
     FetchEmptyResultError,
     FetchError,
     FetchRequest,
@@ -30,6 +31,7 @@ __all__ = [
     "Embedder",
     "EmbeddingSpec",
     "FetchAuthError",
+    "FetchConfig",
     "FetchEmptyResultError",
     "FetchError",
     "FetcherKey",

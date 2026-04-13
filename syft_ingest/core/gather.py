@@ -3,101 +3,73 @@ from __future__ import annotations
 from loguru import logger
 
 from syft_ingest.core.models import Corpus
-from syft_ingest.core.source_specs import SocialProfileSource, SourceSpec
-
-
-def _apply_social_profile_metadata(
-    spec: SocialProfileSource,
-    corpus: Corpus,
-) -> None:
-    for item in corpus.local:
-        metadata = dict(item.metadata or {})
-        parser_platform = str(metadata.get("platform") or "").strip().lower()
-        if parser_platform and parser_platform != spec.platform:
-            raise RuntimeError(
-                "Parsed platform "
-                f"{parser_platform!r} does not match source spec platform "
-                f"{spec.platform!r} for {spec.raw_dirs}"
-            )
-        metadata.setdefault("platform", spec.platform)
-        metadata.setdefault("extractor", spec.extractor)
-        metadata["source_profile"] = {
-            "platform": spec.platform,
-            "extractor": spec.extractor,
-            "handle": spec.handle,
-            "profile_url": spec.profile_url,
-            "start_date": spec.start_date,
-            "end_date": spec.end_date,
-            "external_account_id": spec.external_account_id,
-            "display_name": spec.display_name,
-            "source_slug": spec.source_slug,
-        }
-        item.metadata = metadata
-
-
-def _gather_from_source_spec(name: str, spec: SourceSpec) -> Corpus:
-    corpus = Corpus(person=name)
-    if not isinstance(spec, SourceSpec):
-        logger.warning("Object does not satisfy SourceSpec protocol: {!r}", spec)
-        return corpus
-
-    kind = getattr(spec, "kind", None)
-    if kind == "social_profile":
-        from syft_ingest.sources.local import fetch_local
-
-        corpus.add(fetch_local(spec.raw_dirs, author=name))
-        # Apply social-specific metadata if the spec has the fields
-        if isinstance(spec, SocialProfileSource):
-            _apply_social_profile_metadata(spec, corpus)
-        return corpus
-
-    logger.warning("Unsupported source spec kind: {!r}", kind)
-    return corpus
 
 
 def gather(
-    name: str,
-    *,
-    source_specs: list[SourceSpec] | None = None,
-    sources: list[str] | None = None,
-    local_dirs: list[str] | None = None,
-    **kwargs,
+    platform: str,
+    urls: list[str] | None = None,
+    author: str = "",
+    **config,
 ) -> Corpus:
-    """Gather content from multiple sources into a Corpus."""
-    corpus = Corpus(person=name)
-    sources = sources or []
-    source_specs = source_specs or []
+    """Gather content from a platform or local sources into a Corpus.
 
-    for spec in source_specs:
-        source_corpus = _gather_from_source_spec(name, spec)
-        corpus.add(source_corpus.all_items())
+    Simplified API (Phase 4):
+        gather("youtube", ["https://youtube.com/watch?v=..."])
+        gather("facebook", ["https://facebook.com/user"])
+        gather("instagram", ["https://instagram.com/user/"])
+        gather("local", ["/path/to/export"], author="Andrej Karpathy")
 
-    for source in sources:
-        try:
-            if source == "local":
-                if not local_dirs:
-                    logger.warning(
-                        "Source 'local' specified but no local_dirs provided"
-                    )
-                    continue
-                from syft_ingest.sources.local import fetch_local
+    Args:
+        platform: Platform name ("youtube", "facebook", "instagram", "tiktok", "local")
+        urls: List of URLs or local directory paths to fetch from
+        author: Optional author/person name for metadata
+        **config: Fetcher-specific config options (socket_timeout, timeout, posts_limit, etc.)
 
-                items = fetch_local(local_dirs, author=name)
-                corpus.add(items)
-            elif source == "youtube":
-                logger.warning("YouTube source not yet implemented")
-            elif source == "web":
-                logger.warning("Web source not yet implemented")
-            elif source == "arxiv":
-                logger.warning("arXiv source not yet implemented")
-            elif source == "podcast":
-                logger.warning("Podcast source not yet implemented")
-            elif source == "tiktok":
-                logger.warning("TikTok source not yet implemented")
-            else:
-                logger.warning(f"Unknown source: {source!r}")
-        except Exception as e:
-            logger.error(f"Failed to fetch from source {source!r}: {e}")
+    Returns:
+        Corpus: Unified collection of content items from all sources
+    """
+    corpus = Corpus(person=author)
 
-    logger.info(f"Gathered {len(corpus.all_items())} items for {name!r}")
+    # Validate URLs are provided for all platforms
+    if not urls:
+        raise ValueError(f"Platform '{platform}' requires urls list")
+
+    try:
+        from syft_ingest.core.fetcher import FetchRequest
+        from syft_ingest.core.registry import get_fetcher
+        from syft_ingest.core.url_router import Platform
+
+        # Convert to Platform enum (validates platform name)
+        p = Platform(platform)
+
+        # Create request (auto-detects extractor from platform)
+        # Include author in config if provided (for LocalFetcher and other fetchers that need it)
+        request_config = dict(config)
+        if author:
+            request_config["author"] = author
+
+        request = FetchRequest(
+            platform=p,
+            urls=urls,
+            config=request_config,
+        )
+
+        # Get fetcher from registry
+        fetcher = get_fetcher(p, request.extractor)
+
+        # Fetch and add to corpus
+        result = fetcher.fetch(request)
+        corpus.add(result.items)
+        logger.info(f"Gathered {len(result.items)} items from {platform}")
+
+    except ValueError as e:
+        logger.error(f"Invalid platform: {e}")
+        raise
+    except KeyError as e:
+        logger.error(f"No fetcher registered for {platform}: {e}")
+        raise
+    except Exception as e:
+        logger.error(f"Failed to fetch from {platform}: {e}")
+        raise
+
     return corpus
