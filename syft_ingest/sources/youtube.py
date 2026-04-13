@@ -150,7 +150,7 @@ class YtDlpFetcher:
                 for video_url in video_urls:
                     try:
                         video_result = await self._extract_video_info(
-                            video_url, download=download_enabled
+                            video_url, download=download_enabled, output_dir=output_dir
                         )
                         if video_result:
                             items.append(video_result)
@@ -194,7 +194,7 @@ class YtDlpFetcher:
                 for video_url in request.urls:
                     try:
                         video_result = await self._extract_video_info(
-                            video_url, download=download_enabled
+                            video_url, download=download_enabled, output_dir=output_dir
                         )
                         if video_result:
                             items.append(video_result)
@@ -345,7 +345,7 @@ class YtDlpFetcher:
             ) from e
 
     async def _extract_video_info(
-        self, video_url: str, download: bool = False
+        self, video_url: str, download: bool = False, output_dir: Path | None = None
     ) -> VideoResult | None:
         """Extract metadata from a single YouTube video.
 
@@ -356,6 +356,7 @@ class YtDlpFetcher:
         Args:
             video_url: YouTube video URL.
             download: If True and config['download_full_video']=True, attempt download.
+            output_dir: Directory to save downloaded video (required if download=True).
 
         Returns:
             VideoResult with extracted metadata, or None if not found.
@@ -424,6 +425,26 @@ class YtDlpFetcher:
                 view_count=view_count,
                 metadata=metadata,
             )
+
+            # Optionally download video if enabled
+            if (
+                download
+                and self._config.get("download_full_video", False)
+                and output_dir
+            ):
+                try:
+                    file_path = await self._download_video(video_url, output_dir)
+                    video_result.metadata["video_file_path"] = str(file_path)
+                    logger.info("Downloaded video to {path}", path=file_path)
+                except FetchError:
+                    raise
+                except Exception as e:
+                    logger.error(
+                        "Download failed for {url}: {error}", url=video_url, error=e
+                    )
+                    raise FetchError(
+                        f"Video download failed: {str(e)}", platform="youtube"
+                    ) from e
 
             logger.debug("Extracted metadata for {title}", title=title)
             return video_result
@@ -537,3 +558,19 @@ class YtDlpFetcher:
                 f"Failed to download video: {str(e)}",
                 platform="youtube",
             ) from e
+
+
+# Auto-register YtDlpFetcher on import
+try:
+    from syft_ingest.core.registry import register_fetcher
+    from syft_ingest.core.url_router import Platform
+
+    _ytdlp_fetcher = YtDlpFetcher()
+    register_fetcher(Platform.YOUTUBE, "yt-dlp", _ytdlp_fetcher)
+    logger.info("YtDlpFetcher registered for youtube")
+except Exception as e:
+    logger.warning(
+        "Failed to auto-register YtDlpFetcher: {}. "
+        "You can register manually via register_fetcher().",
+        e,
+    )
