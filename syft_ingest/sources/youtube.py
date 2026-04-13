@@ -35,6 +35,10 @@ from syft_ingest.core.fetcher import (
 )
 from syft_ingest.core.models import SourceType, VideoResult
 
+# Constants
+DEFAULT_SOCKET_TIMEOUT = 30
+DEFAULT_PLAYLIST_LIMIT = 50
+
 # Import yt-dlp
 try:
     import yt_dlp
@@ -67,8 +71,8 @@ class YtDlpFetcher:
         """
         # Default config
         defaults = {
-            "socket_timeout": 30,
-            "playlistend": 50,
+            "socket_timeout": DEFAULT_SOCKET_TIMEOUT,
+            "playlistend": DEFAULT_PLAYLIST_LIMIT,
             "download_full_video": False,
         }
 
@@ -108,11 +112,12 @@ class YtDlpFetcher:
         Optionally downloads videos if config['download_full_video'] and output_dir set.
 
         Steps:
-        1. Check if first URL is channel/playlist (heuristic: /channel/, /@, /playlist, /c/)
-        2. If channel: enumerate videos, extract metadata for each
-        3. If single video: extract metadata for all provided URLs
-        4. Optionally download if enabled and output_dir provided
-        5. Return FetchResult with items and artifact_paths
+        1. Merge request.config into effective config (per-request overrides)
+        2. Check if first URL is channel/playlist (heuristic: /channel/, /@, /playlist, /c/)
+        3. If channel: enumerate videos, extract metadata for each
+        4. If single video: extract metadata for all provided URLs
+        5. Optionally download if enabled and output_dir provided
+        6. Return FetchResult with items and artifact_paths
 
         Args:
             request: FetchRequest with urls, output_dir, and config.
@@ -126,7 +131,10 @@ class YtDlpFetcher:
         items: list[VideoResult] = []
         artifact_paths: dict[str, Path] = {}
         output_dir = request.output_dir
-        download_enabled = self._config.get("download_full_video", False)
+
+        # Merge request.config into effective config (per-request overrides take precedence)
+        effective_config = {**self._config, **request.config}
+        download_enabled = effective_config.get("download_full_video", False)
 
         logger.info(
             "Fetching {n} YouTube URL(s)",
@@ -142,7 +150,9 @@ class YtDlpFetcher:
                 logger.info("Detected channel/playlist URL: {url}", url=first_url)
                 # Enumerate videos from channel
                 video_urls = await self._enumerate_channel(
-                    first_url, limit=self._config.get("playlistend", 50)
+                    first_url,
+                    limit=effective_config.get("playlistend", DEFAULT_PLAYLIST_LIMIT),
+                    config=effective_config,
                 )
                 logger.info("Enumerated {n} videos from channel", n=len(video_urls))
 
@@ -150,7 +160,10 @@ class YtDlpFetcher:
                 for video_url in video_urls:
                     try:
                         video_result = await self._extract_video_info(
-                            video_url, download=download_enabled, output_dir=output_dir
+                            video_url,
+                            download=download_enabled,
+                            output_dir=output_dir,
+                            config=effective_config,
                         )
                         if video_result:
                             items.append(video_result)
@@ -194,7 +207,10 @@ class YtDlpFetcher:
                 for video_url in request.urls:
                     try:
                         video_result = await self._extract_video_info(
-                            video_url, download=download_enabled, output_dir=output_dir
+                            video_url,
+                            download=download_enabled,
+                            output_dir=output_dir,
+                            config=effective_config,
                         )
                         if video_result:
                             items.append(video_result)
@@ -245,11 +261,15 @@ class YtDlpFetcher:
                 platform="youtube",
             )
 
-        # Build response with content hashes
-        content_hashes = {
-            item.url or item.title: hashlib.sha256(item.title.encode()).hexdigest()
-            for item in items
-        }
+        # Build response with proper content hashes (Phase 6 deduplication)
+        # Hash includes video ID + title + text to prevent false-positive deduplication
+        content_hashes = {}
+        for item in items:
+            video_id = item.metadata.get("source_id", "unknown")
+            hash_input = f"{video_id}:{item.title}:{item.text}"
+            content_hashes[item.url or item.title] = hashlib.sha256(
+                hash_input.encode()
+            ).hexdigest()
 
         return FetchResult(
             items=items,
@@ -278,7 +298,12 @@ class YtDlpFetcher:
             pattern in url for pattern in ["/channel/", "/@", "/playlist", "/c/"]
         )
 
-    async def _enumerate_channel(self, channel_url: str, limit: int = 50) -> list[str]:
+    async def _enumerate_channel(
+        self,
+        channel_url: str,
+        limit: int = DEFAULT_PLAYLIST_LIMIT,
+        config: dict | None = None,
+    ) -> list[str]:
         """Enumerate video URLs from a channel/playlist using extract_flat.
 
         Uses yt-dlp's extract_flat=True for fast enumeration without downloading.
@@ -286,7 +311,8 @@ class YtDlpFetcher:
 
         Args:
             channel_url: YouTube channel or playlist URL
-            limit: Max videos to enumerate (default 50)
+            limit: Max videos to enumerate (default DEFAULT_PLAYLIST_LIMIT)
+            config: Optional config dict (uses self._config if not provided)
 
         Returns:
             List of full video URLs
@@ -299,9 +325,14 @@ class YtDlpFetcher:
             limit=limit,
         )
 
+        # Use provided config or fall back to instance config
+        effective_config = config or self._config
+
         try:
             ydl_opts = {
-                "socket_timeout": self._config.get("socket_timeout", 30),
+                "socket_timeout": effective_config.get(
+                    "socket_timeout", DEFAULT_SOCKET_TIMEOUT
+                ),
                 "extract_flat": True,
                 "quiet": True,
                 "no_warnings": True,
@@ -345,13 +376,18 @@ class YtDlpFetcher:
             ) from e
 
     async def _extract_video_info(
-        self, video_url: str, download: bool = False, output_dir: Path | None = None
+        self,
+        video_url: str,
+        download: bool = False,
+        output_dir: Path | None = None,
+        config: dict | None = None,
     ) -> VideoResult | None:
         """Extract metadata from a single YouTube video.
 
         Uses yt-dlp to extract structured metadata from the video,
         then maps it to a VideoResult model. Extracts captions/subtitles with
-        timestamps as the primary acquisition method.
+        timestamps as the primary acquisition method (reuses subtitles from initial
+        metadata extraction to avoid redundant API calls).
 
         Optionally downloads the video if download=True and
         config['download_full_video']=True (advanced feature).
@@ -360,6 +396,7 @@ class YtDlpFetcher:
             video_url: YouTube video URL.
             download: If True and config['download_full_video']=True, attempt download.
             output_dir: Directory to save downloaded video (required if download=True).
+            config: Optional config dict (uses self._config if not provided).
 
         Returns:
             VideoResult with extracted metadata including captions, or None if not found.
@@ -372,10 +409,15 @@ class YtDlpFetcher:
         """
         logger.debug("Extracting metadata for {url}", url=video_url)
 
+        # Use provided config or fall back to instance config
+        effective_config = config or self._config
+
         try:
             # Configure yt-dlp options for metadata extraction
             ydl_opts = {
-                "socket_timeout": self._config.get("socket_timeout", 30),
+                "socket_timeout": effective_config.get(
+                    "socket_timeout", DEFAULT_SOCKET_TIMEOUT
+                ),
                 "quiet": True,
                 "no_warnings": True,
                 "extract_flat": False,
@@ -417,26 +459,15 @@ class YtDlpFetcher:
             }
 
             # Extract captions/subtitles with timestamps (primary acquisition method)
+            # NOTE: Captions are already in the first extract_info response as 'subtitles' key.
+            # We reuse them here instead of making a second yt-dlp call (which would double API requests).
             captions = {}
-            try:
-                ydl_opts_captions = {
-                    "writesubtitles": True,
-                    "allsubtitles": False,
-                    "subtitlesformat": "json3",  # Returns structured data with timestamps
-                    "skip_download": True,
-                    "quiet": True,
-                    "no_warnings": True,
-                    "socket_timeout": self._config.get("socket_timeout", 30),
-                }
-                with yt_dlp.YoutubeDL(ydl_opts_captions) as ydl:
-                    info_captions = ydl.extract_info(video_url, download=False)
-                    if info_captions.get("subtitles"):
-                        captions = self._parse_captions(info_captions["subtitles"])
-                        logger.debug(
-                            "Extracted captions in {n} languages", n=len(captions)
-                        )
-            except Exception as e:
-                logger.debug("Could not extract captions: {error}", error=e)
+            if info.get("subtitles"):
+                try:
+                    captions = self._parse_captions(info["subtitles"])
+                    logger.debug("Extracted captions in {n} languages", n=len(captions))
+                except Exception as e:
+                    logger.debug("Could not parse captions: {error}", error=e)
 
             # Store captions in metadata
             metadata["captions"] = captions
@@ -458,11 +489,13 @@ class YtDlpFetcher:
             # Note: video download is opt-in, not called by default
             if (
                 download
-                and self._config.get("download_full_video", False)
+                and effective_config.get("download_full_video", False)
                 and output_dir
             ):
                 try:
-                    file_path = await self._download_video(video_url, output_dir)
+                    file_path = await self._download_video(
+                        video_url, output_dir, config=effective_config
+                    )
                     video_result.metadata["video_file_path"] = str(file_path)
                     logger.info("Downloaded video to {path}", path=file_path)
                 except FetchError:
@@ -559,7 +592,9 @@ class YtDlpFetcher:
         )
         return parsed
 
-    async def _download_video(self, video_url: str, output_dir: Path) -> Path:
+    async def _download_video(
+        self, video_url: str, output_dir: Path, config: dict | None = None
+    ) -> Path:
         """Download a video with best video+audio combo.
 
         Creates output_dir if it doesn't exist. Uses yt-dlp's format selection
@@ -568,6 +603,7 @@ class YtDlpFetcher:
         Args:
             video_url: YouTube video URL
             output_dir: Directory to save video file
+            config: Optional config dict (uses self._config if not provided).
 
         Returns:
             Path to downloaded file
@@ -577,13 +613,18 @@ class YtDlpFetcher:
         """
         logger.info("Downloading video: {url}", url=video_url)
 
+        # Use provided config or fall back to instance config
+        effective_config = config or self._config
+
         try:
             # Create output directory if needed
             output_dir.mkdir(parents=True, exist_ok=True)
             logger.debug("Output directory ready: {path}", path=output_dir)
 
             ydl_opts = {
-                "socket_timeout": self._config.get("socket_timeout", 30),
+                "socket_timeout": effective_config.get(
+                    "socket_timeout", DEFAULT_SOCKET_TIMEOUT
+                ),
                 "format": "bestvideo+bestaudio/best",
                 "quiet": True,
                 "no_warnings": True,

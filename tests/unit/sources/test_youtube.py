@@ -813,9 +813,9 @@ class TestYtDlpFetcherChannelEnumeration:
 
         assert len(result.items) == 1
         assert result.items[0].title == "Single Video"
-        # extract_info is called twice: once for metadata, once for captions
-        # (no enumeration occurs for single video URLs)
-        assert mock_ydl_instance.extract_info.call_count == 2
+        # extract_info is called once for metadata (captions are reused from first call,
+        # no second redundant call). No enumeration occurs for single video URLs.
+        assert mock_ydl_instance.extract_info.call_count == 1
 
     @patch("yt_dlp.YoutubeDL")
     def test_channel_with_mixed_availability(self, mock_ydl_class):
