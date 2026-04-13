@@ -32,6 +32,7 @@ from syft_ingest.core.registry import (
 )
 from syft_ingest.core.url_router import Platform
 from syft_ingest.sources.brightdata import BrightDataFetcher
+from syft_ingest.sources.local import LocalFetcher
 from syft_ingest.sources.youtube import YtDlpFetcher
 
 
@@ -46,6 +47,7 @@ def _reregister_fetchers(monkeypatch=None):
     yt_key = FetcherKey(platform=Platform.YOUTUBE, extractor="yt-dlp")
     fb_key = FetcherKey(platform=Platform.FACEBOOK, extractor="brightdata")
     ig_key = FetcherKey(platform=Platform.INSTAGRAM, extractor="brightdata")
+    local_key = FetcherKey(platform=Platform.LOCAL, extractor="local")
 
     if yt_key not in FETCHER_REGISTRY:
         register_fetcher(Platform.YOUTUBE, "yt-dlp", YtDlpFetcher())
@@ -55,6 +57,9 @@ def _reregister_fetchers(monkeypatch=None):
 
     if ig_key not in FETCHER_REGISTRY:
         register_fetcher(Platform.INSTAGRAM, "brightdata", BrightDataFetcher())
+
+    if local_key not in FETCHER_REGISTRY:
+        register_fetcher(Platform.LOCAL, "local", LocalFetcher())
 
 
 @pytest.fixture(autouse=True)

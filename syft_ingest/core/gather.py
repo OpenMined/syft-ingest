@@ -30,18 +30,7 @@ def gather(
     """
     corpus = Corpus(person=author)
 
-    # Handle "local" specially (existing behavior)
-    if platform == "local":
-        if not urls:
-            raise ValueError("'local' platform requires urls (list of directory paths)")
-        from syft_ingest.sources.local import fetch_local
-
-        items = fetch_local(urls, author=author)
-        corpus.add(items)
-        logger.info(f"Gathered {len(items)} items from local directories")
-        return corpus
-
-    # Handle remote platforms via fetcher registry
+    # Validate URLs are provided for all platforms
     if not urls:
         raise ValueError(f"Platform '{platform}' requires urls list")
 
@@ -54,10 +43,15 @@ def gather(
         p = Platform(platform)
 
         # Create request (auto-detects extractor from platform)
+        # Include author in config if provided (for LocalFetcher and other fetchers that need it)
+        request_config = dict(config)
+        if author:
+            request_config["author"] = author
+
         request = FetchRequest(
             platform=p,
             urls=urls,
-            config=config,
+            config=request_config,
         )
 
         # Get fetcher from registry

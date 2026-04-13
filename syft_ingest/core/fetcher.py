@@ -144,6 +144,7 @@ class FetchRequest(BaseModel):
                 Platform.INSTAGRAM: "brightdata",
                 Platform.FACEBOOK: "brightdata",
                 Platform.TIKTOK: "brightdata",
+                Platform.LOCAL: "local",
             }
             self.extractor = extractor_map.get(self.platform)
 

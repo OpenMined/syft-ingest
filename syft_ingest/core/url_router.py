@@ -21,12 +21,13 @@ if TYPE_CHECKING:
 
 
 class Platform(str, Enum):
-    """Social platforms we can ingest content from."""
+    """Platforms we can ingest content from."""
 
     FACEBOOK = "facebook"
     INSTAGRAM = "instagram"
     YOUTUBE = "youtube"
     TIKTOK = "tiktok"
+    LOCAL = "local"
 
 
 class AcquisitionMethod(str, Enum):
@@ -34,6 +35,7 @@ class AcquisitionMethod(str, Enum):
 
     YT_DLP = "yt-dlp"
     BRIGHT_DATA = "bright_data"
+    LOCAL = "local"
 
 
 # Maps each platform to its acquisition method.
@@ -42,6 +44,7 @@ _PLATFORM_ACQUISITION: dict[Platform, AcquisitionMethod] = {
     Platform.INSTAGRAM: AcquisitionMethod.BRIGHT_DATA,
     Platform.YOUTUBE: AcquisitionMethod.YT_DLP,
     Platform.TIKTOK: AcquisitionMethod.BRIGHT_DATA,
+    Platform.LOCAL: AcquisitionMethod.LOCAL,
 }
 
 

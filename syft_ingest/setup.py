@@ -37,3 +37,11 @@ def register_fetchers() -> None:
         logger.debug("Registered BrightDataFetcher for Facebook and Instagram")
     except Exception as e:
         logger.warning(f"Failed to register BrightDataFetcher: {e}")
+
+    try:
+        from syft_ingest.sources.local import LocalFetcher
+
+        register_fetcher(Platform.LOCAL, "local", LocalFetcher())
+        logger.debug("Registered LocalFetcher for local directories")
+    except Exception as e:
+        logger.warning(f"Failed to register LocalFetcher: {e}")
