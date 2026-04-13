@@ -129,8 +129,15 @@ _TRACKING_PARAMS = frozenset(
 )
 
 
-def _normalize_url(url: str, parsed: urlparse) -> str:  # type: ignore[override]
-    """Strip tracking parameters and fragments, lowercase the host."""
+def _normalize_url(parsed: urlparse) -> str:
+    """Strip tracking parameters and fragments, lowercase the host.
+
+    Args:
+        parsed: Parsed URL components from urlparse.
+
+    Returns:
+        Normalized URL string without tracking parameters or fragments.
+    """
     from urllib.parse import parse_qs, urlencode, urlunparse
 
     clean_params = {
@@ -190,7 +197,7 @@ def resolve_url(url: str) -> RouteResult:
     if platform is None:
         raise UnsupportedPlatformError(url, parsed.netloc)
 
-    normalized = _normalize_url(url, parsed)
+    normalized = _normalize_url(parsed)
 
     return RouteResult(
         platform=platform,
@@ -243,7 +250,7 @@ def get_fetcher_for_url(url: str, default_method: str | None = None) -> ContentF
     from syft_ingest.core.registry import get_fetcher
 
     # Resolve URL to platform
-    route_result = resolve_url(url)
+    route_result: RouteResult = resolve_url(url)
     platform = route_result.platform
 
     # Use provided method or look up default for this platform
