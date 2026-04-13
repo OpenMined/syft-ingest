@@ -19,7 +19,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from syft_ingest.core.models import ContentItem
 from syft_ingest.core.url_router import Platform
@@ -32,10 +32,27 @@ class FetchRequest(BaseModel):
     when starting a sync job: what platform/extractor to use, which profile or
     URLs to fetch, optional source identity, date window, and extractor-specific
     knobs carried in ``config``.
+
+    Simplified API: ``platform`` and ``extractor`` are auto-detected and optional.
+    Users only need to provide ``urls`` and optionally ``platform`` (defaults based on URL):
+
+    Examples:
+        # Minimal: just URLs, platform auto-detected from URL
+        FetchRequest(urls=["https://www.youtube.com/@user"])
+
+        # With explicit platform as string
+        FetchRequest(platform="instagram", urls=["https://www.instagram.com/user/"])
+
+        # With optional config
+        FetchRequest(
+            platform="youtube",
+            urls=["https://www.youtube.com/watch?v=..."],
+            config={"playlistend": 5}
+        )
     """
 
-    platform: Platform
-    extractor: str = Field(min_length=1)
+    platform: Platform | str  # Accept string (e.g. "instagram") or Platform enum
+    extractor: str | None = None  # Auto-detected from platform if not provided
     urls: list[str] = Field(min_length=1)
     source_kind: str | None = None
     handle: str | None = None
@@ -46,6 +63,35 @@ class FetchRequest(BaseModel):
     end_date: str | None = None
     output_dir: Path | None = None
     config: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("platform", mode="before")
+    @classmethod
+    def validate_platform(cls, v: Platform | str) -> Platform:
+        """Accept platform as string name (e.g. 'instagram') or Platform enum."""
+        if isinstance(v, Platform):
+            return v
+        if isinstance(v, str):
+            # Convert string to Platform enum
+            try:
+                return Platform(v.lower())
+            except ValueError:
+                valid = ", ".join(p.value for p in Platform)
+                raise ValueError(f"Invalid platform '{v}'. Valid: {valid}") from None
+        raise ValueError(f"platform must be Platform enum or string, got {type(v)}")
+
+    @model_validator(mode="after")
+    def auto_detect_extractor(self) -> FetchRequest:
+        """Auto-detect extractor from platform if not provided."""
+        if self.extractor is None:
+            # Map platform to default extractor
+            extractor_map = {
+                Platform.YOUTUBE: "yt-dlp",
+                Platform.INSTAGRAM: "brightdata",
+                Platform.FACEBOOK: "brightdata",
+                Platform.TIKTOK: "brightdata",
+            }
+            self.extractor = extractor_map.get(self.platform)
+        return self
 
 
 class FetchResult(BaseModel):
