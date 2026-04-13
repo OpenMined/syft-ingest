@@ -27,7 +27,13 @@ from syft_ingest.core.fetcher import (
     FetchResult,
     FetchTimeoutError,
 )
-from syft_ingest.core.models import ArticleResult, ContentItem, SourceType, VideoResult
+from syft_ingest.core.models import (
+    ContentItem,
+    ProfileResult,
+    ReelResult,
+    SocialPostResult,
+    SourceType,
+)
 
 # Import the brightdata SDK
 try:
@@ -136,7 +142,7 @@ class BrightDataFetcher:
         if platform_name not in ["facebook", "instagram"]:
             raise FetchError(
                 f"Unsupported platform: {platform_name}. "
-                "Phase 2 supports facebook and instagram only.",
+                "We are only supporting facebook and instagram for now.",
                 platform=platform_name,
             )
 
@@ -279,7 +285,7 @@ class BrightDataFetcher:
             platform: Platform name ("instagram" or "facebook").
 
         Returns:
-            List of ContentItem subclass instances (ArticleResult or VideoResult).
+            List of ContentItem subclass instances (ProfileResult, SocialPostResult, or ReelResult).
             Empty list if response is empty or None.
         """
         if not raw_data:
@@ -307,13 +313,13 @@ class BrightDataFetcher:
     def _parse_instagram_response(self, raw_data: dict[str, Any]) -> list[ContentItem]:
         """Parse Instagram scraper response into ContentItem list.
 
-        Handles both profile and post responses.
+        Handles profiles, posts (image/text), and reels (video).
 
         Args:
             raw_data: Response dict from Instagram scraper.
 
         Returns:
-            List of ArticleResult items.
+            List of ProfileResult, SocialPostResult, or ReelResult items.
         """
         items: list[ContentItem] = []
 
@@ -325,21 +331,23 @@ class BrightDataFetcher:
                     name = profile.get("name", username)
                     bio = profile.get("bio", "")
                     followers = profile.get("followers_count", 0)
+                    following = profile.get("following_count", 0)
                     posts_count = profile.get("posts_count", 0)
                     profile_picture_url = profile.get("profile_picture_url")
+                    verified = profile.get("verified", False)
 
-                    item = ArticleResult(
+                    item = ProfileResult(
                         title=username,
                         author=name,
                         text=bio,
                         url=f"https://instagram.com/{username}",
-                        source_type=SourceType.WEB,
+                        source_type=SourceType.INSTAGRAM,
                         published_at=None,
-                        metadata={
-                            "followers": followers,
-                            "posts": posts_count,
-                            "profile_picture": profile_picture_url,
-                        },
+                        followers_count=followers,
+                        following_count=following,
+                        posts_count=posts_count,
+                        profile_picture_url=profile_picture_url,
+                        verified=verified,
                     )
                     items.append(item)
                 except Exception as e:
@@ -370,33 +378,32 @@ class BrightDataFetcher:
                         except (ValueError, AttributeError):
                             logger.debug("Could not parse date {}", created_at_str)
 
-                    metadata = {
-                        "likes": likes,
-                        "comments": comments,
-                        "shares": shares,
-                        "media_count": len(media_urls),
-                    }
-
                     if has_video or video_duration:
-                        item = VideoResult(
+                        item = ReelResult(
                             title=post_id,
                             author=username,
                             text=caption,
                             url=post.get("post_url"),
-                            source_type=SourceType.YOUTUBE,
+                            source_type=SourceType.INSTAGRAM,
                             published_at=published_at,
-                            metadata=metadata,
                             duration_seconds=video_duration,
+                            likes_count=likes,
+                            comments_count=comments,
+                            shares_count=shares,
+                            media_urls=media_urls,
                         )
                     else:
-                        item = ArticleResult(
+                        item = SocialPostResult(
                             title=post_id,
                             author=username,
                             text=caption,
                             url=post.get("post_url"),
-                            source_type=SourceType.WEB,
+                            source_type=SourceType.INSTAGRAM,
                             published_at=published_at,
-                            metadata=metadata,
+                            likes_count=likes,
+                            comments_count=comments,
+                            shares_count=shares,
+                            media_urls=media_urls,
                         )
 
                     items.append(item)
@@ -408,11 +415,13 @@ class BrightDataFetcher:
     def _parse_facebook_response(self, raw_data: dict[str, Any]) -> list[ContentItem]:
         """Parse Facebook scraper response into ContentItem list.
 
+        Handles text/image posts and video posts.
+
         Args:
             raw_data: Response dict from Facebook scraper.
 
         Returns:
-            List of ArticleResult or VideoResult items.
+            List of SocialPostResult or ReelResult items.
         """
         items: list[ContentItem] = []
 
@@ -459,12 +468,6 @@ class BrightDataFetcher:
                 if isinstance(post.get("shares"), dict):
                     shares_count = post["shares"].get("count", 0)
 
-                metadata = {
-                    "likes": likes_count,
-                    "comments": comments_count,
-                    "shares": shares_count,
-                }
-
                 # Check for video
                 is_video = (
                     post.get("type") == "video"
@@ -479,26 +482,36 @@ class BrightDataFetcher:
                         if isinstance(video_data, dict)
                         else None
                     )
+                    media_urls = (
+                        [video_data.get("source")]
+                        if isinstance(video_data, dict) and video_data.get("source")
+                        else []
+                    )
 
-                    item = VideoResult(
+                    item = ReelResult(
                         title=post_id,
                         author=author,
                         text=text,
                         url=permalink_url,
-                        source_type=SourceType.YOUTUBE,
+                        source_type=SourceType.FACEBOOK,
                         published_at=published_at,
-                        metadata=metadata,
                         duration_seconds=duration,
+                        likes_count=likes_count,
+                        comments_count=comments_count,
+                        shares_count=shares_count,
+                        media_urls=media_urls,
                     )
                 else:
-                    item = ArticleResult(
+                    item = SocialPostResult(
                         title=post_id,
                         author=author,
                         text=text,
                         url=permalink_url,
-                        source_type=SourceType.WEB,
+                        source_type=SourceType.FACEBOOK,
                         published_at=published_at,
-                        metadata=metadata,
+                        likes_count=likes_count,
+                        comments_count=comments_count,
+                        shares_count=shares_count,
                     )
 
                 items.append(item)

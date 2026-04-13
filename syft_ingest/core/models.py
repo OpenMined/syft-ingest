@@ -13,6 +13,8 @@ class SourceType(str, Enum):
     WEB = "web"
     PODCAST = "podcast"
     LOCAL = "local"
+    FACEBOOK = "facebook"
+    INSTAGRAM = "instagram"
 
 
 class ContentItem(BaseModel):
@@ -54,15 +56,55 @@ class PodcastResult(ContentItem):
     duration_seconds: int | None = None
 
 
+class ProfileResult(ContentItem):
+    """User profile from social platforms (Instagram, Facebook, TikTok)."""
+
+    source_type: SourceType
+    followers_count: int = 0
+    following_count: int = 0
+    posts_count: int = 0
+    profile_picture_url: str | None = None
+    verified: bool = False
+    bio: str = ""
+
+
+class SocialPostResult(ContentItem):
+    """Text or image post from social platforms (Instagram, Facebook)."""
+
+    source_type: SourceType
+    likes_count: int = 0
+    comments_count: int = 0
+    shares_count: int = 0
+    media_urls: list[str] = Field(default_factory=list)
+    engagement_rate: float | None = None
+
+
+class ReelResult(ContentItem):
+    """Video content (Reels, Shorts, TikTok videos) from social platforms."""
+
+    source_type: SourceType
+    duration_seconds: int | None = None
+    likes_count: int = 0
+    comments_count: int = 0
+    shares_count: int = 0
+    view_count: int = 0
+    media_urls: list[str] = Field(default_factory=list)
+    engagement_rate: float | None = None
+
+
 class Corpus(BaseModel):
     """Collection of content items from multiple sources."""
 
     person: str
     youtube: list[VideoResult] = Field(default_factory=list)
-    tiktok: list[VideoResult] = Field(default_factory=list)
+    tiktok: list[ReelResult] = Field(default_factory=list)
     arxiv: list[PaperResult] = Field(default_factory=list)
     web: list[ArticleResult] = Field(default_factory=list)
     podcast: list[PodcastResult] = Field(default_factory=list)
+    facebook: list[SocialPostResult | ReelResult] = Field(default_factory=list)
+    instagram: list[ProfileResult | SocialPostResult | ReelResult] = Field(
+        default_factory=list
+    )
     local: list[ContentItem] = Field(default_factory=list)
 
     def all_items(self) -> list[ContentItem]:
@@ -72,6 +114,8 @@ class Corpus(BaseModel):
             + self.arxiv
             + self.web
             + self.podcast
+            + self.facebook
+            + self.instagram
             + self.local
         )
 

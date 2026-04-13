@@ -11,7 +11,12 @@ from syft_ingest.core.fetcher import (
     FetchEmptyResultError,
     FetchRequest,
 )
-from syft_ingest.core.models import ArticleResult, SourceType, VideoResult
+from syft_ingest.core.models import (
+    ProfileResult,
+    ReelResult,
+    SocialPostResult,
+    SourceType,
+)
 from syft_ingest.core.registry import get_fetcher, reset_registry
 from syft_ingest.core.url_router import Platform
 from syft_ingest.sources.brightdata import BrightDataFetcher
@@ -174,9 +179,10 @@ async def test_end_to_end_instagram_fetch(
         assert result.remote_job_id == "job-ig-e2e"
         assert result.remote_status == "ready"
         assert len(result.items) == 1
-        assert isinstance(result.items[0], ArticleResult)
+        assert isinstance(result.items[0], ProfileResult)
         assert result.items[0].author == "Test User"
-        assert result.items[0].metadata["followers"] == 1000
+        assert result.items[0].followers_count == 1000
+        assert result.items[0].source_type == SourceType.INSTAGRAM
         assert result.rows_fetched == 1
         assert result.fetched_at is not None
 
@@ -211,10 +217,11 @@ async def test_end_to_end_facebook_fetch(
         assert result.remote_job_id == "job-fb-e2e"
         assert result.remote_status == "ready"
         assert len(result.items) == 1
-        assert isinstance(result.items[0], ArticleResult)
+        assert isinstance(result.items[0], SocialPostResult)
         assert result.items[0].author == "Test Author"
         assert result.items[0].text == "Test post"
-        assert result.items[0].metadata["likes"] == 50
+        assert result.items[0].likes_count == 50
+        assert result.items[0].source_type == SourceType.FACEBOOK
 
 
 @pytest.mark.asyncio
@@ -321,8 +328,8 @@ async def test_end_to_end_facebook_video_fetch(
         result = await brightdata_fetcher._fetch_async(request)
 
         assert len(result.items) == 1
-        assert isinstance(result.items[0], VideoResult)
-        assert result.items[0].source_type == SourceType.YOUTUBE
+        assert isinstance(result.items[0], ReelResult)
+        assert result.items[0].source_type == SourceType.FACEBOOK
         assert result.items[0].duration_seconds == 120
 
 
@@ -354,4 +361,4 @@ def test_end_to_end_sync_fetch(brightdata_fetcher, mock_instagram_profile_respon
 
         assert result.remote_status == "ready"
         assert len(result.items) == 1
-        assert isinstance(result.items[0], ArticleResult)
+        assert isinstance(result.items[0], ProfileResult)
