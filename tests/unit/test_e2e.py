@@ -5,29 +5,6 @@ import json
 import pytest
 
 import syft_ingest
-from syft_ingest.core.registry import (
-    FETCHER_REGISTRY,
-    register_fetcher,
-)
-from syft_ingest.core.url_router import Platform
-from syft_ingest.sources.local import LocalFetcher
-
-
-def _ensure_local_fetcher_registered(monkeypatch=None):
-    """Ensure LocalFetcher is registered before each test."""
-    from syft_ingest.core.registry import FetcherKey
-
-    local_key = FetcherKey(platform=Platform.LOCAL, extractor="local")
-
-    if local_key not in FETCHER_REGISTRY:
-        register_fetcher(Platform.LOCAL, "local", LocalFetcher())
-
-
-@pytest.fixture(autouse=True)
-def _fetchers_registered(monkeypatch):
-    """Auto-register fetchers before each test."""
-    _ensure_local_fetcher_registered(monkeypatch=monkeypatch)
-    yield
 
 
 @pytest.fixture

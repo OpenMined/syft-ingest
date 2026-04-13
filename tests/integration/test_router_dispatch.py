@@ -12,54 +12,14 @@ from __future__ import annotations
 import pytest
 
 from syft_ingest.core.fetcher import ContentFetcher
-from syft_ingest.core.registry import (
-    FETCHER_REGISTRY,
-    register_fetcher,
-    reset_registry,
-)
+from syft_ingest.core.registry import reset_registry
 from syft_ingest.core.url_router import (
     InvalidURLError,
-    Platform,
     UnsupportedPlatformError,
     get_fetcher_for_url,
 )
 from syft_ingest.sources.brightdata import BrightDataFetcher
 from syft_ingest.sources.youtube import YtDlpFetcher
-
-
-def _reregister_fetchers(monkeypatch=None):
-    """Re-register fetchers if they're missing from the registry."""
-    # Check if YouTube fetcher is registered
-    from syft_ingest.core.registry import FetcherKey
-
-    # Set test token for BrightDataFetcher if monkeypatch is available
-    if monkeypatch:
-        monkeypatch.setenv("BRIGHTDATA_API_TOKEN", "test-token-for-testing")
-
-    yt_key = FetcherKey(platform=Platform.YOUTUBE, extractor="yt-dlp")
-    fb_key = FetcherKey(platform=Platform.FACEBOOK, extractor="brightdata")
-    ig_key = FetcherKey(platform=Platform.INSTAGRAM, extractor="brightdata")
-
-    if yt_key not in FETCHER_REGISTRY:
-        register_fetcher(Platform.YOUTUBE, "yt-dlp", YtDlpFetcher())
-
-    if fb_key not in FETCHER_REGISTRY:
-        register_fetcher(Platform.FACEBOOK, "brightdata", BrightDataFetcher())
-
-    if ig_key not in FETCHER_REGISTRY:
-        register_fetcher(Platform.INSTAGRAM, "brightdata", BrightDataFetcher())
-
-
-@pytest.fixture(autouse=True)
-def _ensure_fetchers_registered(monkeypatch):
-    """Ensure fetchers are registered before each test.
-
-    This fixture re-registers fetchers before each test in case a previous
-    test cleared the registry. Since some tests deliberately reset the
-    registry to test error handling, we need to restore it.
-    """
-    _reregister_fetchers(monkeypatch=monkeypatch)
-    yield
 
 
 def test_dispatch_youtube_watch_url_to_ytdlp_fetcher():

@@ -26,47 +26,7 @@ from syft_ingest.core.models import (
     SourceType,
     VideoResult,
 )
-from syft_ingest.core.registry import (
-    FETCHER_REGISTRY,
-    register_fetcher,
-)
 from syft_ingest.core.url_router import Platform
-from syft_ingest.sources.brightdata import BrightDataFetcher
-from syft_ingest.sources.local import LocalFetcher
-from syft_ingest.sources.youtube import YtDlpFetcher
-
-
-def _reregister_fetchers(monkeypatch=None):
-    """Re-register fetchers if they're missing from the registry."""
-    from syft_ingest.core.registry import FetcherKey
-
-    # Set test token for BrightDataFetcher if monkeypatch is available
-    if monkeypatch:
-        monkeypatch.setenv("BRIGHTDATA_API_TOKEN", "test-token-for-testing")
-
-    yt_key = FetcherKey(platform=Platform.YOUTUBE, extractor="yt-dlp")
-    fb_key = FetcherKey(platform=Platform.FACEBOOK, extractor="brightdata")
-    ig_key = FetcherKey(platform=Platform.INSTAGRAM, extractor="brightdata")
-    local_key = FetcherKey(platform=Platform.LOCAL, extractor="local")
-
-    if yt_key not in FETCHER_REGISTRY:
-        register_fetcher(Platform.YOUTUBE, "yt-dlp", YtDlpFetcher())
-
-    if fb_key not in FETCHER_REGISTRY:
-        register_fetcher(Platform.FACEBOOK, "brightdata", BrightDataFetcher())
-
-    if ig_key not in FETCHER_REGISTRY:
-        register_fetcher(Platform.INSTAGRAM, "brightdata", BrightDataFetcher())
-
-    if local_key not in FETCHER_REGISTRY:
-        register_fetcher(Platform.LOCAL, "local", LocalFetcher())
-
-
-@pytest.fixture(autouse=True)
-def _ensure_fetchers_registered(monkeypatch):
-    """Ensure fetchers are registered before each test."""
-    _reregister_fetchers(monkeypatch=monkeypatch)
-    yield
 
 
 def test_gather_youtube_url_source():
