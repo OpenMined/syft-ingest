@@ -162,7 +162,7 @@ class YtDlpFetcher:
                 # Extract metadata for each video
                 for video_url in video_urls:
                     try:
-                        video_result = await self._extract_video_info(
+                        video_result = await self._extract_video_info_and_captions(
                             video_url,
                             download=download_enabled,
                             output_dir=output_dir,
@@ -215,7 +215,7 @@ class YtDlpFetcher:
                 # Single video: extract metadata for each URL
                 for video_url in request.urls:
                     try:
-                        video_result = await self._extract_video_info(
+                        video_result = await self._extract_video_info_and_captions(
                             video_url,
                             download=download_enabled,
                             output_dir=output_dir,
@@ -384,7 +384,7 @@ class YtDlpFetcher:
                 platform="youtube",
             ) from e
 
-    async def _extract_video_info(
+    async def _extract_video_info_and_captions(
         self,
         video_url: str,
         download: bool = False,

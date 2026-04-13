@@ -58,7 +58,7 @@ class TestYtDlpFetcherMetadataExtraction:
     def test_extract_single_video_metadata(self, mock_ydl_class):
         """Verify metadata extraction from yt-dlp info dict to VideoResult.
 
-        Tests that _extract_video_info correctly maps yt-dlp metadata
+        Tests that _extract_video_info_and_captions correctly maps yt-dlp metadata
         fields (title, duration, view_count, etc.) to VideoResult fields.
         """
         import asyncio
@@ -89,10 +89,10 @@ class TestYtDlpFetcherMetadataExtraction:
             },
         }
 
-        # Create fetcher and call _extract_video_info
+        # Create fetcher and call _extract_video_info_and_captions
         fetcher = YtDlpFetcher()
         video_result = asyncio.run(
-            fetcher._extract_video_info("https://youtube.com/watch?v=test")
+            fetcher._extract_video_info_and_captions("https://youtube.com/watch?v=test")
         )
 
         # Verify VideoResult fields
@@ -117,7 +117,7 @@ class TestYtDlpFetcherMetadataExtraction:
     def test_extract_metadata_with_missing_fields(self, mock_ydl_class):
         """Verify metadata extraction handles missing fields gracefully.
 
-        Tests that _extract_video_info provides defaults when yt-dlp
+        Tests that _extract_video_info_and_captions provides defaults when yt-dlp
         info dict is missing optional fields.
         """
         import asyncio
@@ -136,7 +136,7 @@ class TestYtDlpFetcherMetadataExtraction:
 
         fetcher = YtDlpFetcher()
         video_result = asyncio.run(
-            fetcher._extract_video_info("https://youtube.com/watch?v=min")
+            fetcher._extract_video_info_and_captions("https://youtube.com/watch?v=min")
         )
 
         assert video_result.title == "Minimal Video"
@@ -153,7 +153,7 @@ class TestYtDlpFetcherCaptionExtraction:
     def test_extract_captions_with_timestamps(self, mock_ydl_class):
         """Verify captions are extracted with timestamps (start, end).
 
-        Tests that _extract_video_info captures captions from yt-dlp
+        Tests that _extract_video_info_and_captions captures captions from yt-dlp
         with text and timing information preserved.
         """
         import asyncio
@@ -180,7 +180,7 @@ class TestYtDlpFetcherCaptionExtraction:
 
         fetcher = YtDlpFetcher()
         video_result = asyncio.run(
-            fetcher._extract_video_info("https://youtube.com/watch?v=test")
+            fetcher._extract_video_info_and_captions("https://youtube.com/watch?v=test")
         )
 
         # Verify captions extracted with correct format
@@ -203,7 +203,7 @@ class TestYtDlpFetcherCaptionExtraction:
     def test_captions_stored_in_metadata(self, mock_ydl_class):
         """Verify captions are stored in VideoResult.metadata['captions'].
 
-        Tests that _extract_video_info stores parsed captions in the
+        Tests that _extract_video_info_and_captions stores parsed captions in the
         metadata dict under the 'captions' key.
         """
         import asyncio
@@ -228,7 +228,9 @@ class TestYtDlpFetcherCaptionExtraction:
 
         fetcher = YtDlpFetcher()
         video_result = asyncio.run(
-            fetcher._extract_video_info("https://youtube.com/watch?v=multi")
+            fetcher._extract_video_info_and_captions(
+                "https://youtube.com/watch?v=multi"
+            )
         )
 
         # Verify captions dict exists in metadata
@@ -250,7 +252,7 @@ class TestYtDlpFetcherCaptionExtraction:
     def test_missing_captions_handled_gracefully(self, mock_ydl_class):
         """Verify missing captions don't crash extraction.
 
-        Tests that _extract_video_info handles videos without captions
+        Tests that _extract_video_info_and_captions handles videos without captions
         gracefully, storing empty captions dict.
         """
         import asyncio
@@ -271,7 +273,9 @@ class TestYtDlpFetcherCaptionExtraction:
 
         fetcher = YtDlpFetcher()
         video_result = asyncio.run(
-            fetcher._extract_video_info("https://youtube.com/watch?v=nocaptions")
+            fetcher._extract_video_info_and_captions(
+                "https://youtube.com/watch?v=nocaptions"
+            )
         )
 
         # Verify captions key exists but is empty
@@ -315,7 +319,7 @@ class TestYtDlpFetcherCaptionExtraction:
     def test_download_not_called_by_default(self, mock_ydl_class):
         """Verify full video download is NOT called by default.
 
-        Tests that _extract_video_info with default config does not
+        Tests that _extract_video_info_and_captions with default config does not
         attempt to download the video file (only captions).
         """
         import asyncio
@@ -335,7 +339,7 @@ class TestYtDlpFetcherCaptionExtraction:
 
         fetcher = YtDlpFetcher()  # Default: download_full_video=False
         video_result = asyncio.run(
-            fetcher._extract_video_info("https://youtube.com/watch?v=test")
+            fetcher._extract_video_info_and_captions("https://youtube.com/watch?v=test")
         )
 
         # Verify download was not called
@@ -369,7 +373,9 @@ class TestYtDlpFetcherErrorHandling:
         fetcher = YtDlpFetcher()
         with pytest.raises(FetchEmptyResultError) as exc_info:
             asyncio.run(
-                fetcher._extract_video_info("https://youtube.com/watch?v=notfound")
+                fetcher._extract_video_info_and_captions(
+                    "https://youtube.com/watch?v=notfound"
+                )
             )
 
         assert "not found" in str(exc_info.value).lower()
@@ -398,7 +404,9 @@ class TestYtDlpFetcherErrorHandling:
         fetcher = YtDlpFetcher()
         with pytest.raises(FetchAuthError) as exc_info:
             asyncio.run(
-                fetcher._extract_video_info("https://youtube.com/watch?v=agerestricted")
+                fetcher._extract_video_info_and_captions(
+                    "https://youtube.com/watch?v=agerestricted"
+                )
             )
 
         assert (
@@ -426,7 +434,11 @@ class TestYtDlpFetcherErrorHandling:
 
         fetcher = YtDlpFetcher()
         with pytest.raises(FetchTimeoutError):
-            asyncio.run(fetcher._extract_video_info("https://youtube.com/watch?v=slow"))
+            asyncio.run(
+                fetcher._extract_video_info_and_captions(
+                    "https://youtube.com/watch?v=slow"
+                )
+            )
 
     @patch("yt_dlp.YoutubeDL")
     def test_download_error_timeout_raises_timeout_error(self, mock_ydl_class):
@@ -450,7 +462,9 @@ class TestYtDlpFetcherErrorHandling:
         fetcher = YtDlpFetcher()
         with pytest.raises(FetchTimeoutError):
             asyncio.run(
-                fetcher._extract_video_info("https://youtube.com/watch?v=slow2")
+                fetcher._extract_video_info_and_captions(
+                    "https://youtube.com/watch?v=slow2"
+                )
             )
 
 
@@ -478,7 +492,9 @@ class TestYtDlpFetcherConfig:
         }
 
         fetcher = YtDlpFetcher(config={"socket_timeout": 5})
-        asyncio.run(fetcher._extract_video_info("https://youtube.com/watch?v=test"))
+        asyncio.run(
+            fetcher._extract_video_info_and_captions("https://youtube.com/watch?v=test")
+        )
 
         # Verify YoutubeDL was called with correct timeout
         call_args = mock_ydl_class.call_args
