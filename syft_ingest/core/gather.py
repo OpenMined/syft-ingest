@@ -61,12 +61,26 @@ def gather(
     source_specs: list[SourceSpec] | None = None,
     sources: list[str] | None = None,
     local_dirs: list[str] | None = None,
+    url_sources: list[str] | None = None,
     **kwargs,
 ) -> Corpus:
-    """Gather content from multiple sources into a Corpus."""
+    """Gather content from multiple sources into a Corpus.
+
+    Args:
+        name: Person/creator identifier
+        source_specs: List of SourceSpec objects (social profile exports)
+        sources: List of source type strings ('local', 'youtube', etc.) - deprecated in favor of url_sources
+        local_dirs: List of local export directory paths
+        url_sources: List of creator URLs (YouTube, Instagram, Facebook) - NEW
+        **kwargs: Additional options
+
+    Returns:
+        Corpus: Unified collection of content items from all sources
+    """
     corpus = Corpus(person=name)
     sources = sources or []
     source_specs = source_specs or []
+    url_sources = url_sources or []
 
     for spec in source_specs:
         source_corpus = _gather_from_source_spec(name, spec)
@@ -98,6 +112,68 @@ def gather(
                 logger.warning(f"Unknown source: {source!r}")
         except Exception as e:
             logger.error(f"Failed to fetch from source {source!r}: {e}")
+
+    # URL sources dispatch via url_router and fetcher registry
+    for url in url_sources:
+        try:
+            from syft_ingest.core.fetcher import (
+                FetchEmptyResultError,
+                FetchError,
+                FetchRequest,
+            )
+            from syft_ingest.core.url_router import (
+                _PLATFORM_ACQUISITION,
+                AcquisitionMethod,
+                get_fetcher_for_url,
+                resolve_url,
+            )
+
+            logger.info(f"Fetching from URL: {url}")
+
+            # Resolve URL to get platform and acquisition method
+            route_result = resolve_url(url)
+            platform = route_result.platform
+
+            # Map acquisition method to extractor name
+            method_mapping = {
+                AcquisitionMethod.YT_DLP: "yt-dlp",
+                AcquisitionMethod.BRIGHT_DATA: "brightdata",
+            }
+            acquisition_method = _PLATFORM_ACQUISITION[platform]
+            extractor = method_mapping.get(acquisition_method)
+
+            if not extractor:
+                logger.warning(f"No extractor configured for {platform.value}")
+                continue
+
+            # Dispatch URL to fetcher via registry
+            fetcher = get_fetcher_for_url(url)
+
+            # Create fetch request with resolved platform and extractor
+            request = FetchRequest(
+                platform=platform,
+                extractor=extractor,
+                urls=[url],
+            )
+
+            # Fetch content
+            result = fetcher.fetch(request)
+
+            # Add items to corpus
+            if result and result.items:
+                corpus.add(result.items)
+                logger.info(f"Fetched {len(result.items)} items from {url}")
+            else:
+                logger.warning(f"No items returned from {url}")
+
+        except FetchEmptyResultError as e:
+            logger.info(f"Empty result from {url}: {e}")
+        except FetchError as e:
+            logger.warning(f"Fetch error for {url}: {e}")
+        except ValueError as e:
+            logger.warning(f"Invalid URL {url}: {e}")
+        except Exception as e:
+            logger.error(f"Unexpected error fetching {url}: {e}")
 
     logger.info(f"Gathered {len(corpus.all_items())} items for {name!r}")
     return corpus
