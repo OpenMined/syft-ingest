@@ -19,10 +19,55 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from syft_ingest.core.models import ContentItem
 from syft_ingest.core.url_router import Platform
+
+
+class FetchConfig(BaseModel):
+    """Configuration options for content fetching.
+
+    Platform-agnostic config model that validates options for all fetchers.
+    Each fetcher uses only the options relevant to its platform.
+
+    YouTube (yt-dlp):
+        socket_timeout: Network timeout in seconds (default: 30)
+        playlistend: Max videos from channel/playlist (default: 50)
+        download_full_video: Enable full video download (default: false)
+
+    Instagram/Facebook (BrightData):
+        timeout: Total scrape job timeout in seconds (default: 180)
+        poll_interval: Check job completion every N seconds (default: 5)
+        posts_limit: Limit posts fetched for testing (default: no limit)
+    """
+
+    # YouTube options
+    socket_timeout: int | None = Field(
+        default=None, ge=1, description="Network timeout in seconds"
+    )
+    playlistend: int | None = Field(
+        default=None, ge=1, description="Max videos from channel/playlist"
+    )
+    download_full_video: bool = Field(
+        default=False, description="Enable full video download"
+    )
+
+    # BrightData options
+    timeout: int | None = Field(
+        default=None, ge=1, description="Scrape job timeout in seconds"
+    )
+    poll_interval: int | None = Field(
+        default=None, ge=1, description="Job status check interval in seconds"
+    )
+    posts_limit: int | None = Field(
+        default=None, ge=1, description="Limit posts fetched (for testing)"
+    )
+
+    model_config = ConfigDict(
+        extra="allow",  # Allow extra fields for forward compatibility
+        validate_assignment=True,  # Validate on assignment
+    )
 
 
 class FetchRequest(BaseModel):
@@ -34,20 +79,27 @@ class FetchRequest(BaseModel):
     knobs carried in ``config``.
 
     Simplified API: ``platform`` and ``extractor`` are auto-detected and optional.
-    Users only need to provide ``urls`` and optionally ``platform`` (defaults based on URL):
+    ``config`` is validated via FetchConfig model with IDE support.
 
     Examples:
-        # Minimal: just URLs, platform auto-detected from URL
-        FetchRequest(urls=["https://www.youtube.com/@user"])
-
-        # With explicit platform as string
-        FetchRequest(platform="instagram", urls=["https://www.instagram.com/user/"])
-
-        # With optional config
+        # Minimal: just URLs
         FetchRequest(
             platform="youtube",
-            urls=["https://www.youtube.com/watch?v=..."],
-            config={"playlistend": 5}
+            urls=["https://www.youtube.com/@user"]
+        )
+
+        # With config options (validated)
+        FetchRequest(
+            platform="youtube",
+            urls=["https://www.youtube.com/@user"],
+            config={"playlistend": 10, "socket_timeout": 60}
+        )
+
+        # Instagram with post limit for testing
+        FetchRequest(
+            platform="instagram",
+            urls=["https://www.instagram.com/user/"],
+            config={"posts_limit": 5}
         )
     """
 
@@ -62,7 +114,10 @@ class FetchRequest(BaseModel):
     start_date: str | None = None
     end_date: str | None = None
     output_dir: Path | None = None
-    config: dict[str, Any] = Field(default_factory=dict)
+    config: FetchConfig | dict[str, Any] = Field(
+        default_factory=dict,
+        description="Fetcher-specific options (validated via FetchConfig, converted to dict)",
+    )
 
     @field_validator("platform", mode="before")
     @classmethod
@@ -91,6 +146,11 @@ class FetchRequest(BaseModel):
                 Platform.TIKTOK: "brightdata",
             }
             self.extractor = extractor_map.get(self.platform)
+
+        # Convert FetchConfig to dict for fetcher compatibility
+        if isinstance(self.config, FetchConfig):
+            self.config = self.config.model_dump(exclude_none=True)
+
         return self
 
 
