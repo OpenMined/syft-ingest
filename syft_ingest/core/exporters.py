@@ -93,19 +93,41 @@ def _export_text(items: list[ContentItem], output_dir: str) -> None:
     logger.info(f"Exported {len(items)} items to {out}/")
 
 
-def export(corpus: Corpus, fmt: str, **kwargs) -> None:
+_EXT_TO_FMT = {
+    ".jsonl": "jsonl",
+    ".json": "json",
+}
+
+
+def export(corpus: Corpus, output: str) -> None:
+    """Export corpus to a file, inferring format from extension.
+
+    Args:
+        corpus: The Corpus to export.
+        output: File path (.jsonl, .json) or directory (text export).
+
+    Supported formats:
+        .jsonl → one JSON object per line
+        .json  → JSON array
+        directory path → one .txt file per item
+    """
     items = corpus.all_items()
     if not items:
         logger.warning("No items to export")
         return
 
+    path = Path(output)
+    fmt = _EXT_TO_FMT.get(path.suffix.lower())
+
     if fmt == "jsonl":
-        _export_jsonl(items, kwargs["output"])
+        _export_jsonl(items, output)
     elif fmt == "json":
-        _export_json(items, kwargs["output"])
-    elif fmt == "text":
-        _export_text(items, kwargs["output_dir"])
+        _export_json(items, output)
+    elif path.suffix == "" or path.is_dir():
+        # No extension or existing directory → text export
+        _export_text(items, output)
     else:
         raise ValueError(
-            f"Unknown export format: {fmt!r}. Supported: jsonl, json, text"
+            f"Unknown export extension: {path.suffix!r}. "
+            f"Supported: .jsonl, .json, or a directory for text export."
         )

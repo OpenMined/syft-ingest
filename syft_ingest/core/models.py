@@ -125,7 +125,8 @@ class Corpus(BaseModel):
         for item in items:
             getattr(self, item.source_type.value).append(item)
 
-    def export(self, fmt: str, **kwargs):
+    def export(self, output: str):
+        """Export corpus to file. Format inferred from extension (.jsonl, .json, or dir)."""
         from syft_ingest.core.exporters import export
 
-        export(self, fmt, **kwargs)
+        export(self, output)

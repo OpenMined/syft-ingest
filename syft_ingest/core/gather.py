@@ -4,11 +4,24 @@ from loguru import logger
 
 from syft_ingest.core.models import Corpus
 
+_fetchers_registered = False
+
+
+def _ensure_fetchers() -> None:
+    """Register fetchers on first use, not at import time."""
+    global _fetchers_registered
+    if not _fetchers_registered:
+        from syft_ingest.setup import register_fetchers
+
+        register_fetchers()
+        _fetchers_registered = True
+
 
 def gather(
     platform: str,
     urls: list[str] | None = None,
     author: str = "",
+    blocking: bool = False,
     **config,
 ) -> Corpus:
     """Gather content from a platform or local sources into a Corpus.
@@ -28,6 +41,8 @@ def gather(
     Returns:
         Corpus: Unified collection of content items from all sources
     """
+    _ensure_fetchers()
+
     corpus = Corpus(person=author)
 
     # Validate URLs are provided for all platforms
