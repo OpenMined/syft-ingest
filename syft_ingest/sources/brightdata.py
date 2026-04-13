@@ -11,7 +11,6 @@ Exceptions from the SDK are wrapped in domain-specific FetchError subclasses:
 
 from __future__ import annotations
 
-import asyncio as asyncio_module
 import hashlib
 import os
 from datetime import UTC, datetime
@@ -100,7 +99,16 @@ class BrightDataFetcher:
             FetchTimeoutError: Poll deadline exceeded.
             FetchError: Generic API or unexpected error.
         """
-        return asyncio_module.run(self._fetch_async(request))
+        import asyncio
+        import concurrent.futures
+
+        coro = self._fetch_async(request)
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(coro)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(asyncio.run, coro).result()
 
     async def _fetch_async(self, request: FetchRequest) -> FetchResult:
         """Trigger/poll/fetch lifecycle using the Bright Data SDK.

@@ -16,7 +16,6 @@ Exceptions from yt-dlp are wrapped in domain-specific FetchError subclasses:
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import socket
 from datetime import UTC, datetime
@@ -103,7 +102,16 @@ class YtDlpFetcher:
             FetchTimeoutError: Request timeout exceeded.
             FetchError: Generic extraction failure.
         """
-        return asyncio.run(self._fetch_async(request))
+        import asyncio
+        import concurrent.futures
+
+        coro = self._fetch_async(request)
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(coro)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(asyncio.run, coro).result()
 
     async def _fetch_async(self, request: FetchRequest) -> FetchResult:
         """Fetch and extract metadata for YouTube videos or channels.
@@ -425,7 +433,7 @@ class YtDlpFetcher:
         effective_config = config or self._config
 
         try:
-            # Configure yt-dlp options for metadata extraction
+            # Configure yt-dlp options for metadata + subtitle extraction
             ydl_opts = {
                 "socket_timeout": effective_config.get(
                     "socket_timeout", DEFAULT_SOCKET_TIMEOUT
@@ -433,6 +441,13 @@ class YtDlpFetcher:
                 "quiet": True,
                 "no_warnings": True,
                 "extract_flat": False,
+                "writesubtitles": True,
+                "writeautomaticsub": True,
+                "subtitlesformat": "vtt",
+                "subtitleslangs": effective_config.get("subtitleslangs", ["en"]),
+                "extractor_args": {
+                    "youtube": {"player_client": ["android", "web"]},
+                },
             }
 
             # Extract metadata using yt-dlp
@@ -463,23 +478,59 @@ class YtDlpFetcher:
                         "Could not parse upload date {date}", date=upload_date_str
                     )
 
-            # Build metadata dict
+            # Build metadata dict with rich video fields
             metadata = {
                 "source_id": source_id,
+                "duration_seconds": duration_seconds,
+                "view_count": view_count,
                 "like_count": like_count,
+                "comment_count": info.get("comment_count"),
                 "thumbnail_url": thumbnail_url,
+                "channel_id": info.get("channel_id"),
+                "channel_url": info.get("channel_url"),
+                "uploader_id": info.get("uploader_id"),
+                "categories": info.get("categories", []),
+                "tags": info.get("tags", []),
+                "description": (description[:500] if description else ""),
+                "language": info.get("language"),
+                "availability": info.get("availability"),
+                "live_status": info.get("live_status"),
+                "age_limit": info.get("age_limit"),
             }
 
-            # Extract captions/subtitles with timestamps (primary acquisition method)
-            # NOTE: Captions are already in the first extract_info response as 'subtitles' key.
-            # We reuse them here instead of making a second yt-dlp call (which would double API requests).
+            # Extract captions/subtitles with timestamps.
+            # With download=False, yt-dlp returns caption URLs (not text).
+            # We fetch the json3 format URL and parse it into segments.
+            # Priority: user-created subtitles > automatic captions.
             captions = {}
-            if info.get("subtitles"):
-                try:
-                    captions = self._parse_captions(info["subtitles"])
-                    logger.debug("Extracted captions in {n} languages", n=len(captions))
-                except Exception as e:
-                    logger.debug("Could not parse captions: {error}", error=e)
+            caption_langs = effective_config.get("subtitleslangs", ["en"])
+            subtitle_sources = info.get("subtitles", {})
+            auto_sources = info.get("automatic_captions", {})
+
+            for lang in caption_langs:
+                # Try user-created first, then auto-generated
+                tracks = subtitle_sources.get(lang, []) or auto_sources.get(lang, [])
+                if not tracks:
+                    continue
+                json3_url = next(
+                    (t["url"] for t in tracks if t.get("ext") == "json3"), None
+                )
+                if json3_url:
+                    try:
+                        parsed = self._fetch_and_parse_json3(json3_url)
+                        if parsed:
+                            captions[lang] = parsed
+                            logger.debug(
+                                "Extracted {n} caption segments for {lang}",
+                                n=len(parsed),
+                                lang=lang,
+                            )
+                    except Exception as e:
+                        logger.debug(
+                            "Could not fetch captions for {lang}: {error}",
+                            lang=lang,
+                            error=e,
+                        )
 
             # Store captions in metadata
             metadata["captions"] = captions
@@ -566,43 +617,40 @@ class YtDlpFetcher:
             )
             raise FetchError(f"Unexpected error: {str(e)}", platform="youtube") from e
 
-    def _parse_captions(self, subtitles_dict: dict) -> dict:
-        """Parse yt-dlp captions to structured format with timestamps.
+    def _fetch_and_parse_json3(self, json3_url: str) -> list[dict]:
+        """Fetch a json3 caption URL and parse into segments.
 
-        Converts yt-dlp's JSON3 subtitle format into a structured dictionary
-        with language codes as keys and lists of caption entries with text,
-        start time, and end time.
-
-        Args:
-            subtitles_dict: {language: [...caption entries...]}, where each
-                entry has 'text', 'start', and 'end' fields from yt-dlp.
+        YouTube's json3 format contains events with segments. Each event has
+        tStartMs (start milliseconds) and dDurationMs (duration), with text
+        in the segs array.
 
         Returns:
-            {language: [{"text": "...", "start": seconds, "end": seconds}, ...]}
-
-        Example:
-            Input: {"en": [{"text": "Hello", "start": 0.5, "end": 2.0}, ...]}
-            Output: {"en": [{"text": "Hello", "start": 0.5, "end": 2.0}, ...]}
+            List of {"text": str, "start": float, "end": float} dicts.
         """
-        parsed = {}
+        import json
+        import urllib.request
 
-        for lang, entries in subtitles_dict.items():
-            if isinstance(entries, list):
-                parsed[lang] = [
-                    {
-                        "text": e.get("text", ""),
-                        "start": e.get("start"),
-                        "end": e.get("end"),
-                    }
-                    for e in entries
-                ]
+        data = json.loads(urllib.request.urlopen(json3_url, timeout=15).read())
+        segments = []
 
-        logger.debug(
-            "Parsed captions for {n} languages: {langs}",
-            n=len(parsed),
-            langs=list(parsed.keys()),
-        )
-        return parsed
+        for event in data.get("events", []):
+            segs = event.get("segs")
+            if not segs:
+                continue
+            text = "".join(s.get("utf8", "") for s in segs).strip()
+            if not text:
+                continue
+            start_ms = event.get("tStartMs", 0)
+            dur_ms = event.get("dDurationMs", 0)
+            segments.append(
+                {
+                    "text": text,
+                    "start": start_ms / 1000.0,
+                    "end": (start_ms + dur_ms) / 1000.0,
+                }
+            )
+
+        return segments
 
     async def _download_video(
         self, video_url: str, output_dir: Path, config: dict | None = None
