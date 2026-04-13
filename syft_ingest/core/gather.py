@@ -121,12 +121,7 @@ def gather(
                 FetchError,
                 FetchRequest,
             )
-            from syft_ingest.core.url_router import (
-                _PLATFORM_ACQUISITION,
-                AcquisitionMethod,
-                get_fetcher_for_url,
-                resolve_url,
-            )
+            from syft_ingest.core.url_router import get_fetcher_for_url, resolve_url
 
             logger.info(f"Fetching from URL: {url}")
 
@@ -134,19 +129,18 @@ def gather(
             route_result = resolve_url(url)
             platform = route_result.platform
 
-            # Map acquisition method to extractor name
+            # Map acquisition method to extractor name (consistent with get_fetcher_for_url)
             method_mapping = {
-                AcquisitionMethod.YT_DLP: "yt-dlp",
-                AcquisitionMethod.BRIGHT_DATA: "brightdata",
+                "AcquisitionMethod.YT_DLP": "yt-dlp",
+                "AcquisitionMethod.BRIGHT_DATA": "brightdata",
             }
-            acquisition_method = _PLATFORM_ACQUISITION[platform]
-            extractor = method_mapping.get(acquisition_method)
+            extractor = method_mapping.get(str(route_result.acquisition_method))
 
             if not extractor:
                 logger.warning(f"No extractor configured for {platform.value}")
                 continue
 
-            # Dispatch URL to fetcher via registry
+            # Dispatch URL to fetcher via registry (does not re-resolve URL)
             fetcher = get_fetcher_for_url(url)
 
             # Create fetch request with resolved platform and extractor
@@ -170,8 +164,8 @@ def gather(
             logger.info(f"Empty result from {url}: {e}")
         except FetchError as e:
             logger.warning(f"Fetch error for {url}: {e}")
-        except ValueError as e:
-            logger.warning(f"Invalid URL {url}: {e}")
+        except (ValueError, KeyError) as e:
+            logger.warning(f"Invalid URL or missing fetcher {url}: {e}")
         except Exception as e:
             logger.error(f"Unexpected error fetching {url}: {e}")
 

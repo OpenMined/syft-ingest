@@ -106,24 +106,26 @@ class BrightDataFetcher:
         """Trigger/poll/fetch lifecycle using the Bright Data SDK.
 
         Steps:
-        1. Validate platform (facebook/instagram only in Phase 2)
+        1. Validate platform (facebook/instagram/tiktok supported)
         2. Extract config (timeout, poll_interval)
         3. Create SDK client (async context manager)
         4. Select platform-specific scraper
         5. Trigger scrape for first URL
         6. Poll for completion with timeout
         7. Fetch raw data
-        8. Return FetchResult (items filled in Plan 03)
+        8. Parse response into ContentItem list
+        9. Return FetchResult with parsed items
 
         Args:
             request: FetchRequest with platform, URLs, config.
 
         Returns:
-            FetchResult with remote_job_id and empty items (for Plan 03).
+            FetchResult with parsed items, row count, job ID, and content hashes.
 
         Raises:
             FetchAuthError: Token validation or auth failure.
             FetchTimeoutError: Poll deadline exceeded or DataNotReadyError.
+            FetchEmptyResultError: No items found in API response.
             FetchError: API error or unexpected exception.
         """
         # Extract parameters from request
@@ -348,6 +350,7 @@ class BrightDataFetcher:
                         posts_count=posts_count,
                         profile_picture_url=profile_picture_url,
                         verified=verified,
+                        bio=bio,
                     )
                     items.append(item)
                 except Exception as e:

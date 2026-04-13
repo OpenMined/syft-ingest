@@ -97,6 +97,8 @@ class Corpus(BaseModel):
 
     person: str
     youtube: list[VideoResult] = Field(default_factory=list)
+    # BREAKING CHANGE: tiktok field changed from list[VideoResult] to list[ReelResult]
+    # to better represent TikTok content as short-form reels with metadata specific to that format
     tiktok: list[ReelResult] = Field(default_factory=list)
     arxiv: list[PaperResult] = Field(default_factory=list)
     web: list[ArticleResult] = Field(default_factory=list)

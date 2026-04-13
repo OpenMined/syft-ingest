@@ -131,6 +131,9 @@ class YtDlpFetcher:
         items: list[VideoResult] = []
         artifact_paths: dict[str, Path] = {}
         output_dir = request.output_dir
+        first_error: FetchError | None = (
+            None  # Track first error for later re-raise if needed
+        )
 
         # Merge request.config into effective config (per-request overrides take precedence)
         effective_config = {**self._config, **request.config}
@@ -182,18 +185,24 @@ class YtDlpFetcher:
 
                     except FetchAuthError as e:
                         # Some videos may be unavailable (age-restricted, private)
+                        if not first_error:
+                            first_error = e
                         logger.warning(
                             "Skipping video {url}: {error}",
                             url=video_url,
                             error=e,
                         )
                     except FetchEmptyResultError as e:
+                        if not first_error:
+                            first_error = e
                         logger.warning(
                             "Video not found {url}: {error}",
                             url=video_url,
                             error=e,
                         )
                     except FetchError as e:
+                        if not first_error:
+                            first_error = e
                         logger.warning(
                             "Error fetching {url}: {error}",
                             url=video_url,
@@ -621,10 +630,24 @@ class YtDlpFetcher:
             output_dir.mkdir(parents=True, exist_ok=True)
             logger.debug("Output directory ready: {path}", path=output_dir)
 
+            socket_timeout = effective_config.get(
+                "socket_timeout", DEFAULT_SOCKET_TIMEOUT
+            )
+
+            # Extract metadata first (respecting socket_timeout) to determine expected filename
+            extract_opts = {
+                "socket_timeout": socket_timeout,
+                "quiet": True,
+                "no_warnings": True,
+            }
+            with yt_dlp.YoutubeDL(extract_opts) as ydl:
+                extracted = ydl.extract_info(video_url, download=False)
+                video_id = extracted.get("id")
+                ext = extracted.get("ext", "mp4")
+
+            # Download with the same socket_timeout configuration
             ydl_opts = {
-                "socket_timeout": effective_config.get(
-                    "socket_timeout", DEFAULT_SOCKET_TIMEOUT
-                ),
+                "socket_timeout": socket_timeout,
                 "format": "bestvideo+bestaudio/best",
                 "quiet": True,
                 "no_warnings": True,
@@ -633,12 +656,6 @@ class YtDlpFetcher:
 
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 ydl.download([video_url])
-
-            # Construct expected output path
-            with yt_dlp.YoutubeDL({"quiet": True}) as ydl:
-                extracted = ydl.extract_info(video_url, download=False)
-                video_id = extracted.get("id")
-                ext = extracted.get("ext", "mp4")
 
             file_path = output_dir / f"{video_id}.{ext}"
 

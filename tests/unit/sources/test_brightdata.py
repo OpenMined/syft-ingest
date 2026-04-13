@@ -82,7 +82,7 @@ class TestBrightDataFetcherAuth:
         fetcher = BrightDataFetcher()
         request = FetchRequest(
             platform=Platform.INSTAGRAM,
-            extractor="bright-data",
+            extractor="brightdata",
             urls=["https://www.instagram.com/testuser"],
         )
 

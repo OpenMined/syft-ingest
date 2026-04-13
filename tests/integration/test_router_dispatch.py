@@ -27,10 +27,14 @@ from syft_ingest.sources.brightdata import BrightDataFetcher
 from syft_ingest.sources.youtube import YtDlpFetcher
 
 
-def _reregister_fetchers():
+def _reregister_fetchers(monkeypatch=None):
     """Re-register fetchers if they're missing from the registry."""
     # Check if YouTube fetcher is registered
     from syft_ingest.core.registry import FetcherKey
+
+    # Set test token for BrightDataFetcher if monkeypatch is available
+    if monkeypatch:
+        monkeypatch.setenv("BRIGHTDATA_API_TOKEN", "test-token-for-testing")
 
     yt_key = FetcherKey(platform=Platform.YOUTUBE, extractor="yt-dlp")
     fb_key = FetcherKey(platform=Platform.FACEBOOK, extractor="brightdata")
@@ -47,14 +51,14 @@ def _reregister_fetchers():
 
 
 @pytest.fixture(autouse=True)
-def _ensure_fetchers_registered():
+def _ensure_fetchers_registered(monkeypatch):
     """Ensure fetchers are registered before each test.
 
     This fixture re-registers fetchers before each test in case a previous
     test cleared the registry. Since some tests deliberately reset the
     registry to test error handling, we need to restore it.
     """
-    _reregister_fetchers()
+    _reregister_fetchers(monkeypatch=monkeypatch)
     yield
 
 

@@ -11,9 +11,13 @@ from __future__ import annotations
 
 import re
 from enum import Enum
+from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field
+
+if TYPE_CHECKING:
+    from syft_ingest.core.fetcher import ContentFetcher
 
 
 class Platform(str, Enum):
@@ -207,7 +211,7 @@ def supported_platforms() -> list[dict[str, str]]:
     ]
 
 
-def get_fetcher_for_url(url: str, default_method: str | None = None):
+def get_fetcher_for_url(url: str, default_method: str | None = None) -> ContentFetcher:
     """Resolve URL to Platform, then dispatch to fetcher registry.
 
     This bridges the URL router (resolves URL → Platform) with the fetcher
@@ -221,7 +225,7 @@ def get_fetcher_for_url(url: str, default_method: str | None = None):
     Args:
         url: Creator URL (YouTube, Instagram, Facebook, or web article)
         default_method: Optional fetcher method name (e.g., "yt-dlp", "brightdata")
-                       If not provided, uses platform default from _PLATFORM_ACQUISITION
+                       If not provided, uses platform default from RouteResult
 
     Returns:
         ContentFetcher instance for the platform
@@ -229,6 +233,7 @@ def get_fetcher_for_url(url: str, default_method: str | None = None):
     Raises:
         InvalidURLError: If the URL is not a valid HTTP(S) URL
         UnsupportedPlatformError: If the URL's platform is not supported
+        ValueError: If no default fetcher method is configured for the platform
         KeyError: If no fetcher is registered for the resolved platform/method
     """
     from syft_ingest.core.fetcher import ContentFetcher
@@ -245,7 +250,8 @@ def get_fetcher_for_url(url: str, default_method: str | None = None):
             AcquisitionMethod.YT_DLP: "yt-dlp",
             AcquisitionMethod.BRIGHT_DATA: "brightdata",
         }
-        acquisition_method = _PLATFORM_ACQUISITION[platform]
+        # Use the acquisition_method from resolve_url result (avoids private state access)
+        acquisition_method = route_result.acquisition_method
         default_method = method_mapping.get(acquisition_method)
 
         if not default_method:
