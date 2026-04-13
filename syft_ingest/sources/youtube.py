@@ -666,19 +666,3 @@ class YtDlpFetcher:
                 f"Failed to download video: {str(e)}",
                 platform="youtube",
             ) from e
-
-
-# Auto-register YtDlpFetcher on import
-try:
-    from syft_ingest.core.registry import register_fetcher
-    from syft_ingest.core.url_router import Platform
-
-    _ytdlp_fetcher = YtDlpFetcher()
-    register_fetcher(Platform.YOUTUBE, "yt-dlp", _ytdlp_fetcher)
-    logger.info("YtDlpFetcher registered for youtube")
-except Exception as e:
-    logger.warning(
-        "Failed to auto-register YtDlpFetcher: {}. "
-        "You can register manually via register_fetcher().",
-        e,
-    )

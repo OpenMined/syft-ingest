@@ -23,6 +23,7 @@ from syft_ingest.core.ingest import (
 )
 from syft_ingest.core.registry import FetcherKey, get_fetcher, register_fetcher
 from syft_ingest.core.source_specs import SocialProfileSource, SourceSpec
+from syft_ingest.setup import register_fetchers
 
 __all__ = [
     "ChunkingSpec",
@@ -50,3 +51,6 @@ __all__ = [
     "ingest_jsonl",
     "register_fetcher",
 ]
+
+# Register all available fetchers on library import
+register_fetchers()

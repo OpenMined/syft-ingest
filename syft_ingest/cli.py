@@ -4,6 +4,7 @@ import argparse
 from pathlib import Path
 
 from syft_ingest import gather
+from syft_ingest.setup import register_fetchers
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -58,6 +59,7 @@ def _cmd_local_export(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    register_fetchers()
     parser = build_parser()
     args = parser.parse_args(argv)
     if args.command == "local-export":

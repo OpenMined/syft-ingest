@@ -519,20 +519,3 @@ class BrightDataFetcher:
                 logger.warning("Failed to parse Facebook post: {}", e)
 
         return items
-
-
-# Auto-register BrightDataFetcher on import
-try:
-    from syft_ingest.core.registry import register_fetcher
-    from syft_ingest.core.url_router import Platform
-
-    _brightdata_fetcher = BrightDataFetcher()
-    register_fetcher(Platform.FACEBOOK, "brightdata", _brightdata_fetcher)
-    register_fetcher(Platform.INSTAGRAM, "brightdata", _brightdata_fetcher)
-    logger.info("BrightDataFetcher registered for facebook and instagram")
-except Exception as e:
-    logger.warning(
-        "Failed to auto-register BrightDataFetcher: {}. "
-        "You can register manually via register_fetcher().",
-        e,
-    )
