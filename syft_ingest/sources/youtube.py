@@ -391,15 +391,18 @@ class YtDlpFetcher:
         output_dir: Path | None = None,
         config: dict | None = None,
     ) -> VideoResult | None:
-        """Extract metadata from a single YouTube video.
+        """Extract video metadata and captions from a single YouTube video.
 
-        Uses yt-dlp to extract structured metadata from the video,
-        then maps it to a VideoResult model. Extracts captions/subtitles with
-        timestamps as the primary acquisition method (reuses subtitles from initial
-        metadata extraction to avoid redundant API calls).
+        PRIMARY ACQUISITION METHOD: Extracts captions/subtitles with timestamps from the video.
+        Uses yt-dlp to fetch structured metadata (title, description, duration, view count, etc.),
+        then extracts available captions with precise timestamps. Maps all extracted content to
+        a VideoResult model.
 
-        Optionally downloads the video if download=True and
-        config['download_full_video']=True (advanced feature).
+        Reuses subtitles from initial metadata extraction to avoid redundant API calls and ensure
+        timestamp accuracy (captions extracted during metadata fetch are most reliable).
+
+        OPTIONAL: Downloads the full video+audio if download=True and
+        config['download_full_video']=True (advanced feature, off by default).
 
         Args:
             video_url: YouTube video URL.
@@ -408,7 +411,7 @@ class YtDlpFetcher:
             config: Optional config dict (uses self._config if not provided).
 
         Returns:
-            VideoResult with extracted metadata including captions, or None if not found.
+            VideoResult with video metadata + extracted captions (with timestamps), or None if not found.
 
         Raises:
             FetchAuthError: Age-restricted or private video.
