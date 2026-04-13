@@ -150,7 +150,9 @@ class FetchRequest(BaseModel):
 
         # Convert FetchConfig to dict for fetcher compatibility
         if isinstance(self.config, FetchConfig):
-            self.config = self.config.model_dump(exclude_none=True)
+            self.config = self.config.model_dump(
+                exclude_none=True, exclude_defaults=True
+            )
 
         return self
 

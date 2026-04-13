@@ -46,9 +46,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _cmd_local_export(args: argparse.Namespace) -> int:
     corpus = gather(
-        args.author,
-        sources=["local"],
-        local_dirs=args.input_dirs,
+        "local",
+        urls=args.input_dirs,
+        author=args.author,
     )
     output_path = Path(args.output).expanduser()
     if args.format == "text":

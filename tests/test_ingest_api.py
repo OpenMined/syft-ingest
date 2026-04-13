@@ -7,7 +7,6 @@ from syft_ingest import (
     EmbeddingSpec,
     NoDocumentsError,
     QdrantDestination,
-    SocialProfileSource,
     gather,
     ingest_corpus,
     ingest_jsonl,
@@ -171,16 +170,9 @@ def test_ingest_corpus_supports_source_spec_metadata(tmp_path, patch_ingest_runt
     )
 
     corpus = gather(
-        "Painted Wildflower",
-        source_specs=[
-            SocialProfileSource(
-                platform="instagram",
-                extractor="brightdata",
-                handle="paintedwildflower",
-                profile_url="https://www.instagram.com/paintedwildflower/",
-                raw_dirs=[str(brightdata_dir)],
-            )
-        ],
+        "local",
+        urls=[str(brightdata_dir)],
+        author="Painted Wildflower",
     )
 
     report = ingest_corpus(
