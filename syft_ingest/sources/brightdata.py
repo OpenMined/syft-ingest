@@ -197,7 +197,7 @@ class BrightDataFetcher:
                 logger.debug("Fetched {bytes} bytes from job", bytes=len(str(raw_data)))
 
                 # Parse response into ContentItem list
-                items = self._parse_response(raw_data, platform_name)
+                items = self._parse_response(raw_data, platform_name, request.config)
 
                 # Raise FetchEmptyResultError if no items parsed
                 if not items:
@@ -277,7 +277,9 @@ class BrightDataFetcher:
                 f"Unexpected error: {str(e)}", platform=platform_name
             ) from e
 
-    def _parse_response(self, raw_data: Any, platform: str) -> list[ContentItem]:
+    def _parse_response(
+        self, raw_data: Any, platform: str, config: dict | None = None
+    ) -> list[ContentItem]:
         """Parse raw Bright Data response into ContentItem list.
 
         Handles platform-specific field extraction and error handling.
@@ -285,6 +287,7 @@ class BrightDataFetcher:
         Args:
             raw_data: Raw response from Bright Data API (dict-like).
             platform: Platform name ("instagram" or "facebook").
+            config: Optional config dict with `posts_limit` for testing.
 
         Returns:
             List of ContentItem subclass instances (ProfileResult, SocialPostResult, or ReelResult).
@@ -293,6 +296,7 @@ class BrightDataFetcher:
         if not raw_data:
             return []
 
+        config = config or {}
         items: list[ContentItem] = []
 
         try:
@@ -304,6 +308,16 @@ class BrightDataFetcher:
                 logger.warning("Unknown platform for parsing: {}", platform)
         except Exception as e:
             logger.error("Error parsing {} response: {}", platform, e, exc_info=True)
+
+        # Apply posts_limit if configured (for testing/sampling)
+        posts_limit = config.get("posts_limit")
+        if posts_limit and posts_limit > 0:
+            items = items[:posts_limit]
+            logger.info(
+                "Limited {platform} items to {limit} (posts_limit config)",
+                platform=platform,
+                limit=posts_limit,
+            )
 
         logger.info(
             "Parsed {n} items from {platform} response",
