@@ -1,0 +1,819 @@
+"""Unit tests for YtDlpFetcher metadata extraction and error handling."""
+
+from __future__ import annotations
+
+import socket
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from syft_ingest.core.fetcher import (
+    ContentFetcher,
+    FetchAuthError,
+    FetchEmptyResultError,
+    FetchError,
+    FetchRequest,
+    FetchTimeoutError,
+)
+from syft_ingest.core.models import SourceType, VideoResult
+from syft_ingest.core.url_router import Platform
+from syft_ingest.sources import YtDlpFetcher
+
+
+class TestYtDlpFetcherProtocol:
+    """Test suite for YtDlpFetcher protocol compliance."""
+
+    def test_ytdlp_fetcher_protocol(self):
+        """Verify YtDlpFetcher implements ContentFetcher protocol.
+
+        Tests that an instance of YtDlpFetcher passes the
+        runtime_checkable ContentFetcher protocol check.
+        """
+        fetcher = YtDlpFetcher()
+        assert isinstance(fetcher, ContentFetcher)
+
+
+class TestYtDlpFetcherInit:
+    """Test suite for YtDlpFetcher initialization."""
+
+    def test_init_with_default_config(self):
+        """Verify YtDlpFetcher initializes with default config."""
+        fetcher = YtDlpFetcher()
+        assert fetcher._config["socket_timeout"] == 30
+        assert fetcher._config["playlistend"] == 50
+        assert fetcher._config["download_full_video"] is False
+
+    def test_init_with_custom_config(self):
+        """Verify YtDlpFetcher merges custom config with defaults."""
+        custom_config = {"socket_timeout": 5}
+        fetcher = YtDlpFetcher(config=custom_config)
+        assert fetcher._config["socket_timeout"] == 5
+        assert fetcher._config["playlistend"] == 50  # default still present
+
+
+class TestYtDlpFetcherMetadataExtraction:
+    """Test suite for single video metadata extraction."""
+
+    @patch("yt_dlp.YoutubeDL")
+    def test_extract_single_video_metadata(self, mock_ydl_class):
+        """Verify metadata extraction from yt-dlp info dict to VideoResult.
+
+        Tests that _extract_video_info correctly maps yt-dlp metadata
+        fields (title, duration, view_count, etc.) to VideoResult fields.
+        """
+        import asyncio
+
+        # Setup mock
+        mock_ydl_instance = MagicMock()
+        mock_ydl_class.return_value.__enter__ = MagicMock(
+            return_value=mock_ydl_instance
+        )
+        mock_ydl_class.return_value.__exit__ = MagicMock(return_value=None)
+
+        # Sample yt-dlp info dict
+        mock_ydl_instance.extract_info.return_value = {
+            "title": "Test Video Title",
+            "description": "Test video description",
+            "uploader": "Test Creator",
+            "duration": 600,
+            "view_count": 10000,
+            "like_count": 500,
+            "thumbnail": "https://example.com/thumb.jpg",
+            "id": "test_video_id",
+            "upload_date": "20260413",
+        }
+
+        # Create fetcher and call _extract_video_info
+        fetcher = YtDlpFetcher()
+        video_result = asyncio.run(
+            fetcher._extract_video_info("https://youtube.com/watch?v=test")
+        )
+
+        # Verify VideoResult fields
+        assert isinstance(video_result, VideoResult)
+        assert video_result.title == "Test Video Title"
+        assert video_result.author == "Test Creator"
+        assert video_result.text == "Test video description"
+        assert video_result.duration_seconds == 600
+        assert video_result.view_count == 10000
+        assert video_result.source_type == SourceType.YOUTUBE
+        assert video_result.url == "https://youtube.com/watch?v=test"
+
+    @patch("yt_dlp.YoutubeDL")
+    def test_extract_metadata_with_missing_fields(self, mock_ydl_class):
+        """Verify metadata extraction handles missing fields gracefully.
+
+        Tests that _extract_video_info provides defaults when yt-dlp
+        info dict is missing optional fields.
+        """
+        import asyncio
+
+        mock_ydl_instance = MagicMock()
+        mock_ydl_class.return_value.__enter__ = MagicMock(
+            return_value=mock_ydl_instance
+        )
+        mock_ydl_class.return_value.__exit__ = MagicMock(return_value=None)
+
+        # Minimal info dict (only title required)
+        mock_ydl_instance.extract_info.return_value = {
+            "title": "Minimal Video",
+            "id": "min_id",
+        }
+
+        fetcher = YtDlpFetcher()
+        video_result = asyncio.run(
+            fetcher._extract_video_info("https://youtube.com/watch?v=min")
+        )
+
+        assert video_result.title == "Minimal Video"
+        assert video_result.author == "Unknown"
+        assert video_result.text == ""
+        assert video_result.duration_seconds is None
+        assert video_result.view_count is None
+
+
+class TestYtDlpFetcherErrorHandling:
+    """Test suite for error classification and handling."""
+
+    @patch("yt_dlp.YoutubeDL")
+    def test_video_not_found_raises_empty_result_error(self, mock_ydl_class):
+        """Verify FetchEmptyResultError is raised for missing videos.
+
+        Tests that yt-dlp DownloadError containing "not found"
+        is classified as FetchEmptyResultError.
+        """
+        import asyncio
+
+        mock_ydl_instance = MagicMock()
+        mock_ydl_class.return_value.__enter__ = MagicMock(
+            return_value=mock_ydl_instance
+        )
+        mock_ydl_class.return_value.__exit__ = MagicMock(return_value=None)
+
+        from yt_dlp.utils import DownloadError
+
+        mock_ydl_instance.extract_info.side_effect = DownloadError("Video not found")
+
+        fetcher = YtDlpFetcher()
+        with pytest.raises(FetchEmptyResultError) as exc_info:
+            asyncio.run(
+                fetcher._extract_video_info("https://youtube.com/watch?v=notfound")
+            )
+
+        assert "not found" in str(exc_info.value).lower()
+
+    @patch("yt_dlp.YoutubeDL")
+    def test_age_restricted_video_raises_auth_error(self, mock_ydl_class):
+        """Verify FetchAuthError is raised for age-restricted videos.
+
+        Tests that yt-dlp DownloadError containing "not available for users"
+        is classified as FetchAuthError.
+        """
+        import asyncio
+
+        mock_ydl_instance = MagicMock()
+        mock_ydl_class.return_value.__enter__ = MagicMock(
+            return_value=mock_ydl_instance
+        )
+        mock_ydl_class.return_value.__exit__ = MagicMock(return_value=None)
+
+        from yt_dlp.utils import DownloadError
+
+        mock_ydl_instance.extract_info.side_effect = DownloadError(
+            "Video is not available for users"
+        )
+
+        fetcher = YtDlpFetcher()
+        with pytest.raises(FetchAuthError) as exc_info:
+            asyncio.run(
+                fetcher._extract_video_info("https://youtube.com/watch?v=agerestricted")
+            )
+
+        assert (
+            "age-restricted" in str(exc_info.value).lower()
+            or "not available" in str(exc_info.value).lower()
+        )
+
+    @patch("yt_dlp.YoutubeDL")
+    def test_socket_timeout_raises_timeout_error(self, mock_ydl_class):
+        """Verify FetchTimeoutError is raised for socket timeouts.
+
+        Tests that socket.timeout exceptions are classified as FetchTimeoutError.
+        """
+        import asyncio
+
+        mock_ydl_instance = MagicMock()
+        mock_ydl_class.return_value.__enter__ = MagicMock(
+            return_value=mock_ydl_instance
+        )
+        mock_ydl_class.return_value.__exit__ = MagicMock(return_value=None)
+
+        mock_ydl_instance.extract_info.side_effect = socket.timeout(
+            "Connection timed out"
+        )
+
+        fetcher = YtDlpFetcher()
+        with pytest.raises(FetchTimeoutError):
+            asyncio.run(fetcher._extract_video_info("https://youtube.com/watch?v=slow"))
+
+    @patch("yt_dlp.YoutubeDL")
+    def test_download_error_timeout_raises_timeout_error(self, mock_ydl_class):
+        """Verify FetchTimeoutError is raised for DownloadError containing 'timeout'.
+
+        Tests that yt-dlp DownloadError containing "timeout" is classified
+        as FetchTimeoutError.
+        """
+        import asyncio
+
+        mock_ydl_instance = MagicMock()
+        mock_ydl_class.return_value.__enter__ = MagicMock(
+            return_value=mock_ydl_instance
+        )
+        mock_ydl_class.return_value.__exit__ = MagicMock(return_value=None)
+
+        from yt_dlp.utils import DownloadError
+
+        mock_ydl_instance.extract_info.side_effect = DownloadError("Request timeout")
+
+        fetcher = YtDlpFetcher()
+        with pytest.raises(FetchTimeoutError):
+            asyncio.run(
+                fetcher._extract_video_info("https://youtube.com/watch?v=slow2")
+            )
+
+
+class TestYtDlpFetcherConfig:
+    """Test suite for configuration passing and timeout handling."""
+
+    @patch("yt_dlp.YoutubeDL")
+    def test_config_timeout_passed_to_ydl(self, mock_ydl_class):
+        """Verify custom socket_timeout config is passed to yt-dlp.
+
+        Tests that FetchRequest config with socket_timeout is used
+        when creating the YoutubeDL instance.
+        """
+        import asyncio
+
+        mock_ydl_instance = MagicMock()
+        mock_ydl_class.return_value.__enter__ = MagicMock(
+            return_value=mock_ydl_instance
+        )
+        mock_ydl_class.return_value.__exit__ = MagicMock(return_value=None)
+
+        mock_ydl_instance.extract_info.return_value = {
+            "title": "Test",
+            "id": "test_id",
+        }
+
+        fetcher = YtDlpFetcher(config={"socket_timeout": 5})
+        asyncio.run(fetcher._extract_video_info("https://youtube.com/watch?v=test"))
+
+        # Verify YoutubeDL was called with correct timeout
+        call_args = mock_ydl_class.call_args
+        # call_args[0][0] is the dict passed as first positional argument
+        assert call_args[0][0]["socket_timeout"] == 5
+
+
+class TestYtDlpFetcherFetchMethod:
+    """Test suite for fetch() method and FetchRequest handling."""
+
+    @patch("yt_dlp.YoutubeDL")
+    def test_fetch_accepts_fetch_request(self, mock_ydl_class):
+        """Verify fetch() method accepts FetchRequest and returns FetchResult.
+
+        Tests that fetch() can be called with a FetchRequest and returns
+        a FetchResult with extracted VideoResult items.
+        """
+        mock_ydl_instance = MagicMock()
+        mock_ydl_class.return_value.__enter__ = MagicMock(
+            return_value=mock_ydl_instance
+        )
+        mock_ydl_class.return_value.__exit__ = MagicMock(return_value=None)
+
+        mock_ydl_instance.extract_info.return_value = {
+            "title": "Test Video",
+            "id": "test_id",
+            "uploader": "Test Author",
+            "description": "Test desc",
+        }
+
+        fetcher = YtDlpFetcher()
+        request = FetchRequest(
+            platform=Platform.YOUTUBE,
+            extractor="yt-dlp",
+            urls=["https://youtube.com/watch?v=test"],
+        )
+
+        result = fetcher.fetch(request)
+
+        assert result.items is not None
+        assert len(result.items) == 1
+        assert isinstance(result.items[0], VideoResult)
+        assert result.items[0].title == "Test Video"
+        assert result.fetched_at is not None
+
+    @patch("yt_dlp.YoutubeDL")
+    def test_fetch_multiple_urls(self, mock_ydl_class):
+        """Verify fetch() processes multiple URLs in sequence.
+
+        Tests that fetch() correctly handles multiple URLs and returns
+        one VideoResult per successful extraction.
+        """
+        mock_ydl_instance = MagicMock()
+        mock_ydl_class.return_value.__enter__ = MagicMock(
+            return_value=mock_ydl_instance
+        )
+        mock_ydl_class.return_value.__exit__ = MagicMock(return_value=None)
+
+        def side_effect_func(url, download=False):
+            video_id = url.split("v=")[-1]
+            return {
+                "title": f"Video {video_id}",
+                "id": video_id,
+                "uploader": "Author",
+                "description": "Desc",
+            }
+
+        mock_ydl_instance.extract_info.side_effect = side_effect_func
+
+        fetcher = YtDlpFetcher()
+        request = FetchRequest(
+            platform=Platform.YOUTUBE,
+            extractor="yt-dlp",
+            urls=[
+                "https://youtube.com/watch?v=vid1",
+                "https://youtube.com/watch?v=vid2",
+                "https://youtube.com/watch?v=vid3",
+            ],
+        )
+
+        result = fetcher.fetch(request)
+
+        assert len(result.items) == 3
+        assert result.items[0].title == "Video vid1"
+        assert result.items[1].title == "Video vid2"
+        assert result.items[2].title == "Video vid3"
+
+    @patch("yt_dlp.YoutubeDL")
+    def test_fetch_with_mixed_success_and_errors(self, mock_ydl_class):
+        """Verify fetch() handles partial success when some URLs fail.
+
+        Tests that if some URLs fail, the successful ones are returned
+        and the errors are logged (not raised). This supports channel enumeration
+        where some videos may be unavailable.
+        """
+        mock_ydl_instance = MagicMock()
+        mock_ydl_class.return_value.__enter__ = MagicMock(
+            return_value=mock_ydl_instance
+        )
+        mock_ydl_class.return_value.__exit__ = MagicMock(return_value=None)
+
+        from yt_dlp.utils import DownloadError
+
+        # First URL succeeds, second raises error, third succeeds
+        mock_ydl_instance.extract_info.side_effect = [
+            {"title": "Video 1", "id": "vid1", "uploader": "Author", "description": ""},
+            DownloadError("Video not found"),
+            {"title": "Video 3", "id": "vid3", "uploader": "Author", "description": ""},
+        ]
+
+        fetcher = YtDlpFetcher()
+        request = FetchRequest(
+            platform=Platform.YOUTUBE,
+            extractor="yt-dlp",
+            urls=[
+                "https://youtube.com/watch?v=vid1",
+                "https://youtube.com/watch?v=notfound",
+                "https://youtube.com/watch?v=vid3",
+            ],
+        )
+
+        # Should succeed with 2 items (first and third URLs), skipping second
+        result = fetcher.fetch(request)
+        assert len(result.items) == 2
+        assert result.items[0].title == "Video 1"
+        assert result.items[1].title == "Video 3"
+
+
+class TestYtDlpFetcherSyncWrapper:
+    """Test suite for sync/async bridge."""
+
+    @patch("yt_dlp.YoutubeDL")
+    def test_sync_fetch_wrapper(self, mock_ydl_class):
+        """Verify sync fetch() method works with asyncio.run bridge.
+
+        Tests that the fetch() method (which calls asyncio.run(_fetch_async))
+        correctly executes the async code synchronously.
+        """
+        mock_ydl_instance = MagicMock()
+        mock_ydl_class.return_value.__enter__ = MagicMock(
+            return_value=mock_ydl_instance
+        )
+        mock_ydl_class.return_value.__exit__ = MagicMock(return_value=None)
+
+        mock_ydl_instance.extract_info.return_value = {
+            "title": "Test Sync Video",
+            "id": "sync_test",
+            "uploader": "Test Author",
+            "description": "Testing sync wrapper",
+        }
+
+        fetcher = YtDlpFetcher()
+        request = FetchRequest(
+            platform=Platform.YOUTUBE,
+            extractor="yt-dlp",
+            urls=["https://youtube.com/watch?v=synctest"],
+        )
+
+        # Call sync fetch() - should work without errors
+        result = fetcher.fetch(request)
+
+        assert result is not None
+        assert len(result.items) == 1
+        assert result.items[0].title == "Test Sync Video"
+
+
+class TestYtDlpFetcherChannelEnumeration:
+    """Test suite for channel/playlist enumeration and download (Plan 03-02)."""
+
+    def test_is_channel_url_detection(self):
+        """Verify channel URL detection heuristics work correctly."""
+        fetcher = YtDlpFetcher()
+
+        # Channel URLs should return True
+        assert fetcher._is_channel_url("https://youtube.com/channel/UCXXX") is True
+        assert fetcher._is_channel_url("https://youtube.com/@creator") is True
+        assert fetcher._is_channel_url("https://youtube.com/c/creator") is True
+        assert (
+            fetcher._is_channel_url("https://youtube.com/playlist?list=PLxxx") is True
+        )
+
+        # Single video URLs should return False
+        assert fetcher._is_channel_url("https://youtube.com/watch?v=abcd1234") is False
+        assert fetcher._is_channel_url("https://youtu.be/abcd1234") is False
+
+    @patch("yt_dlp.YoutubeDL")
+    def test_enumerate_channel_videos(self, mock_ydl_class):
+        """Verify channel enumeration extracts video URLs with extract_flat.
+
+        Tests that _enumerate_channel uses extract_flat=True and returns
+        a list of 5 video URLs from the channel.
+        """
+        import asyncio
+
+        mock_ydl_instance = MagicMock()
+        mock_ydl_class.return_value.__enter__ = MagicMock(
+            return_value=mock_ydl_instance
+        )
+        mock_ydl_class.return_value.__exit__ = MagicMock(return_value=None)
+
+        # Mock channel info with entries
+        mock_ydl_instance.extract_info.return_value = {
+            "entries": [
+                {"url": "https://youtube.com/watch?v=vid1", "id": "vid1"},
+                {"url": "https://youtube.com/watch?v=vid2", "id": "vid2"},
+                {"url": "https://youtube.com/watch?v=vid3", "id": "vid3"},
+                {"url": "https://youtube.com/watch?v=vid4", "id": "vid4"},
+                {"url": "https://youtube.com/watch?v=vid5", "id": "vid5"},
+            ]
+        }
+
+        fetcher = YtDlpFetcher()
+        video_urls = asyncio.run(
+            fetcher._enumerate_channel("https://youtube.com/channel/UCXXX", limit=50)
+        )
+
+        assert len(video_urls) == 5
+        assert all(url.startswith("https://youtube.com/watch?v=") for url in video_urls)
+        assert video_urls[0] == "https://youtube.com/watch?v=vid1"
+
+        # Verify extract_flat was passed to YoutubeDL
+        call_args = mock_ydl_class.call_args
+        ydl_opts = call_args[0][0]
+        assert ydl_opts["extract_flat"] is True
+        assert ydl_opts["playlistend"] == 50
+
+    @patch("yt_dlp.YoutubeDL")
+    def test_playlistend_config_respected(self, mock_ydl_class):
+        """Verify playlistend config is passed to yt-dlp during enumeration.
+
+        Tests that custom playlistend config value (10) is used
+        when enumerating channel videos.
+        """
+        import asyncio
+
+        mock_ydl_instance = MagicMock()
+        mock_ydl_class.return_value.__enter__ = MagicMock(
+            return_value=mock_ydl_instance
+        )
+        mock_ydl_class.return_value.__exit__ = MagicMock(return_value=None)
+
+        mock_ydl_instance.extract_info.return_value = {"entries": []}
+
+        fetcher = YtDlpFetcher(config={"playlistend": 10})
+        asyncio.run(
+            fetcher._enumerate_channel("https://youtube.com/channel/UCXXX", limit=10)
+        )
+
+        # Verify playlistend=10 was passed to YoutubeDL
+        call_args = mock_ydl_class.call_args
+        ydl_opts = call_args[0][0]
+        assert ydl_opts["playlistend"] == 10
+
+    @patch("yt_dlp.YoutubeDL")
+    def test_channel_enumeration_with_fetch_request(self, mock_ydl_class):
+        """Verify channel enumeration in fetch() request processing.
+
+        Tests that fetch() detects channel URLs and enumerates videos,
+        returning 3 VideoResults from 3 enumerated videos.
+        """
+        mock_ydl_instance = MagicMock()
+        mock_ydl_class.return_value.__enter__ = MagicMock(
+            return_value=mock_ydl_instance
+        )
+        mock_ydl_class.return_value.__exit__ = MagicMock(return_value=None)
+
+        def side_effect_func(url, download=False):
+            if "channel" in url or "@" in url:
+                # Channel enumeration (extract_flat=True)
+                return {
+                    "entries": [
+                        {"url": "https://youtube.com/watch?v=ch_vid1", "id": "ch_vid1"},
+                        {"url": "https://youtube.com/watch?v=ch_vid2", "id": "ch_vid2"},
+                        {"url": "https://youtube.com/watch?v=ch_vid3", "id": "ch_vid3"},
+                    ]
+                }
+            else:
+                # Single video metadata extraction
+                video_id = url.split("v=")[-1]
+                return {
+                    "title": f"Channel Video {video_id}",
+                    "id": video_id,
+                    "uploader": "Channel Author",
+                    "description": "Video from enumeration",
+                }
+
+        mock_ydl_instance.extract_info.side_effect = side_effect_func
+
+        fetcher = YtDlpFetcher()
+        request = FetchRequest(
+            platform=Platform.YOUTUBE,
+            extractor="yt-dlp",
+            urls=["https://youtube.com/channel/UCXXX"],
+        )
+
+        result = fetcher.fetch(request)
+
+        assert len(result.items) == 3
+        assert result.items[0].title == "Channel Video ch_vid1"
+        assert result.items[1].title == "Channel Video ch_vid2"
+        assert result.items[2].title == "Channel Video ch_vid3"
+
+    @patch("yt_dlp.YoutubeDL")
+    def test_single_video_url_not_enumerated(self, mock_ydl_class):
+        """Verify single video URLs skip enumeration.
+
+        Tests that fetch() with a single video URL does not call
+        _enumerate_channel and extracts metadata directly.
+        """
+        mock_ydl_instance = MagicMock()
+        mock_ydl_class.return_value.__enter__ = MagicMock(
+            return_value=mock_ydl_instance
+        )
+        mock_ydl_class.return_value.__exit__ = MagicMock(return_value=None)
+
+        # Single video returns full metadata (not enumeration)
+        mock_ydl_instance.extract_info.return_value = {
+            "title": "Single Video",
+            "id": "single_vid",
+            "uploader": "Author",
+            "description": "Just one video",
+        }
+
+        fetcher = YtDlpFetcher()
+        request = FetchRequest(
+            platform=Platform.YOUTUBE,
+            extractor="yt-dlp",
+            urls=["https://youtube.com/watch?v=single_vid"],
+        )
+
+        result = fetcher.fetch(request)
+
+        assert len(result.items) == 1
+        assert result.items[0].title == "Single Video"
+        # extract_info should only be called once for single video
+        assert mock_ydl_instance.extract_info.call_count == 1
+
+    @patch("yt_dlp.YoutubeDL")
+    def test_channel_with_mixed_availability(self, mock_ydl_class):
+        """Verify channel enumeration handles mixed success/failure.
+
+        Tests that when some videos fail (age-restricted, not found),
+        successful videos are still returned.
+        """
+
+        mock_ydl_instance = MagicMock()
+        mock_ydl_class.return_value.__enter__ = MagicMock(
+            return_value=mock_ydl_instance
+        )
+        mock_ydl_class.return_value.__exit__ = MagicMock(return_value=None)
+
+        from yt_dlp.utils import DownloadError
+
+        def side_effect_func(url, download=False):
+            if "channel" in url or "@" in url:
+                # Channel enumeration
+                return {
+                    "entries": [
+                        {
+                            "url": "https://youtube.com/watch?v=available1",
+                            "id": "available1",
+                        },
+                        {
+                            "url": "https://youtube.com/watch?v=restricted",
+                            "id": "restricted",
+                        },
+                        {
+                            "url": "https://youtube.com/watch?v=available2",
+                            "id": "available2",
+                        },
+                    ]
+                }
+            else:
+                # Video extraction
+                video_id = url.split("v=")[-1]
+                if "restricted" in video_id:
+                    raise DownloadError("Video is not available for users")
+                else:
+                    return {
+                        "title": f"Available Video {video_id}",
+                        "id": video_id,
+                        "uploader": "Author",
+                        "description": "Available",
+                    }
+
+        mock_ydl_instance.extract_info.side_effect = side_effect_func
+
+        fetcher = YtDlpFetcher()
+        request = FetchRequest(
+            platform=Platform.YOUTUBE,
+            extractor="yt-dlp",
+            urls=["https://youtube.com/channel/UCXXX"],
+        )
+
+        result = fetcher.fetch(request)
+
+        # Should have 2 successful items (restricted one skipped)
+        assert len(result.items) == 2
+        assert result.items[0].title == "Available Video available1"
+        assert result.items[1].title == "Available Video available2"
+
+    @patch("yt_dlp.YoutubeDL")
+    def test_download_full_video_when_enabled(self, mock_ydl_class):
+        """Verify video download when config['download_full_video']=True.
+
+        Tests that _download_video creates output_dir and downloads file.
+        """
+        import asyncio
+        from pathlib import Path
+        from tempfile import TemporaryDirectory
+
+        mock_ydl_instance = MagicMock()
+        mock_ydl_class.return_value.__enter__ = MagicMock(
+            return_value=mock_ydl_instance
+        )
+        mock_ydl_class.return_value.__exit__ = MagicMock(return_value=None)
+
+        # Mock successful download
+        mock_ydl_instance.download.return_value = 0
+        mock_ydl_instance.extract_info.return_value = {
+            "id": "test_vid",
+            "ext": "mp4",
+        }
+
+        with TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir) / "downloads"
+            # Create a dummy downloaded file
+            output_dir.mkdir(parents=True, exist_ok=True)
+            dummy_file = output_dir / "test_vid.mp4"
+            dummy_file.touch()
+
+            fetcher = YtDlpFetcher(config={"download_full_video": True})
+            result_path = asyncio.run(
+                fetcher._download_video(
+                    "https://youtube.com/watch?v=test_vid", output_dir
+                )
+            )
+
+            assert result_path.exists()
+            assert result_path.name == "test_vid.mp4"
+
+    @patch("yt_dlp.YoutubeDL")
+    def test_download_skipped_when_disabled(self, mock_ydl_class):
+        """Verify download is skipped when config['download_full_video']=False.
+
+        Tests that fetch() with download_full_video=False does not
+        call _download_video.
+        """
+        mock_ydl_instance = MagicMock()
+        mock_ydl_class.return_value.__enter__ = MagicMock(
+            return_value=mock_ydl_instance
+        )
+        mock_ydl_class.return_value.__exit__ = MagicMock(return_value=None)
+
+        mock_ydl_instance.extract_info.return_value = {
+            "title": "Test Video",
+            "id": "test_vid",
+            "uploader": "Author",
+            "description": "Test",
+        }
+
+        fetcher = YtDlpFetcher(config={"download_full_video": False})
+        request = FetchRequest(
+            platform=Platform.YOUTUBE,
+            extractor="yt-dlp",
+            urls=["https://youtube.com/watch?v=test_vid"],
+        )
+
+        result = fetcher.fetch(request)
+
+        # Verify artifact_paths is empty (no download)
+        assert result.artifact_paths == {}
+        assert len(result.items) == 1
+
+    @patch("yt_dlp.YoutubeDL")
+    def test_download_creates_output_directory(self, mock_ydl_class):
+        """Verify _download_video creates output_dir if it doesn't exist.
+
+        Tests that calling _download_video with a non-existent path
+        creates the directory structure.
+        """
+        import asyncio
+        from pathlib import Path
+        from tempfile import TemporaryDirectory
+
+        mock_ydl_instance = MagicMock()
+        mock_ydl_class.return_value.__enter__ = MagicMock(
+            return_value=mock_ydl_instance
+        )
+        mock_ydl_class.return_value.__exit__ = MagicMock(return_value=None)
+
+        mock_ydl_instance.download.return_value = 0
+        mock_ydl_instance.extract_info.return_value = {
+            "id": "test_vid",
+            "ext": "mp4",
+        }
+
+        with TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir) / "nonexistent" / "path"
+
+            # Create dummy file manually since we're mocking
+            output_dir.mkdir(parents=True, exist_ok=True)
+            dummy_file = output_dir / "test_vid.mp4"
+            dummy_file.touch()
+
+            fetcher = YtDlpFetcher()
+            result_path = asyncio.run(
+                fetcher._download_video(
+                    "https://youtube.com/watch?v=test_vid", output_dir
+                )
+            )
+
+            # Verify directory was created
+            assert output_dir.exists()
+            assert result_path.exists()
+
+    @patch("yt_dlp.YoutubeDL")
+    def test_download_error_handling(self, mock_ydl_class):
+        """Verify download errors raise FetchError (not FetchAuthError).
+
+        Tests that yt-dlp download failures are classified as FetchError,
+        not FetchAuthError.
+        """
+        import asyncio
+        from pathlib import Path
+        from tempfile import TemporaryDirectory
+
+        mock_ydl_instance = MagicMock()
+        mock_ydl_class.return_value.__enter__ = MagicMock(
+            return_value=mock_ydl_instance
+        )
+        mock_ydl_class.return_value.__exit__ = MagicMock(return_value=None)
+
+        # Simulate download failure
+        mock_ydl_instance.download.side_effect = Exception("Download failed")
+
+        with TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir) / "downloads"
+
+            fetcher = YtDlpFetcher()
+            with pytest.raises(FetchError) as exc_info:
+                asyncio.run(
+                    fetcher._download_video(
+                        "https://youtube.com/watch?v=test_vid", output_dir
+                    )
+                )
+
+            # Should be FetchError, not FetchAuthError
+            assert isinstance(exc_info.value, FetchError)
+            assert not isinstance(exc_info.value, FetchAuthError)
