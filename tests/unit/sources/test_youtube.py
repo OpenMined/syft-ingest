@@ -70,7 +70,7 @@ class TestYtDlpFetcherMetadataExtraction:
         )
         mock_ydl_class.return_value.__exit__ = MagicMock(return_value=None)
 
-        # Sample yt-dlp info dict
+        # Sample yt-dlp info dict (with captions)
         mock_ydl_instance.extract_info.return_value = {
             "title": "Test Video Title",
             "description": "Test video description",
@@ -81,6 +81,12 @@ class TestYtDlpFetcherMetadataExtraction:
             "thumbnail": "https://example.com/thumb.jpg",
             "id": "test_video_id",
             "upload_date": "20260413",
+            "subtitles": {
+                "en": [
+                    {"text": "Hello world", "start": 0.0, "end": 1.5},
+                    {"text": "This is a test", "start": 1.5, "end": 3.0},
+                ]
+            },
         }
 
         # Create fetcher and call _extract_video_info
@@ -98,6 +104,14 @@ class TestYtDlpFetcherMetadataExtraction:
         assert video_result.view_count == 10000
         assert video_result.source_type == SourceType.YOUTUBE
         assert video_result.url == "https://youtube.com/watch?v=test"
+
+        # Verify captions in metadata
+        assert "captions" in video_result.metadata
+        assert "en" in video_result.metadata["captions"]
+        assert len(video_result.metadata["captions"]["en"]) == 2
+        assert video_result.metadata["captions"]["en"][0]["text"] == "Hello world"
+        assert video_result.metadata["captions"]["en"][0]["start"] == 0.0
+        assert video_result.metadata["captions"]["en"][0]["end"] == 1.5
 
     @patch("yt_dlp.YoutubeDL")
     def test_extract_metadata_with_missing_fields(self, mock_ydl_class):
@@ -130,6 +144,204 @@ class TestYtDlpFetcherMetadataExtraction:
         assert video_result.text == ""
         assert video_result.duration_seconds is None
         assert video_result.view_count is None
+
+
+class TestYtDlpFetcherCaptionExtraction:
+    """Test suite for caption/subtitle extraction."""
+
+    @patch("yt_dlp.YoutubeDL")
+    def test_extract_captions_with_timestamps(self, mock_ydl_class):
+        """Verify captions are extracted with timestamps (start, end).
+
+        Tests that _extract_video_info captures captions from yt-dlp
+        with text and timing information preserved.
+        """
+        import asyncio
+
+        mock_ydl_instance = MagicMock()
+        mock_ydl_class.return_value.__enter__ = MagicMock(
+            return_value=mock_ydl_instance
+        )
+        mock_ydl_class.return_value.__exit__ = MagicMock(return_value=None)
+
+        mock_ydl_instance.extract_info.return_value = {
+            "title": "Test Video",
+            "id": "test_id",
+            "uploader": "Test Author",
+            "description": "Test desc",
+            "subtitles": {
+                "en": [
+                    {"text": "First caption", "start": 0.5, "end": 2.0},
+                    {"text": "Second caption", "start": 2.0, "end": 4.5},
+                    {"text": "Third caption", "start": 4.5, "end": 7.0},
+                ]
+            },
+        }
+
+        fetcher = YtDlpFetcher()
+        video_result = asyncio.run(
+            fetcher._extract_video_info("https://youtube.com/watch?v=test")
+        )
+
+        # Verify captions extracted with correct format
+        assert "captions" in video_result.metadata
+        assert "en" in video_result.metadata["captions"]
+        captions_en = video_result.metadata["captions"]["en"]
+        assert len(captions_en) == 3
+
+        # Verify first caption
+        assert captions_en[0]["text"] == "First caption"
+        assert captions_en[0]["start"] == 0.5
+        assert captions_en[0]["end"] == 2.0
+
+        # Verify second caption
+        assert captions_en[1]["text"] == "Second caption"
+        assert captions_en[1]["start"] == 2.0
+        assert captions_en[1]["end"] == 4.5
+
+    @patch("yt_dlp.YoutubeDL")
+    def test_captions_stored_in_metadata(self, mock_ydl_class):
+        """Verify captions are stored in VideoResult.metadata['captions'].
+
+        Tests that _extract_video_info stores parsed captions in the
+        metadata dict under the 'captions' key.
+        """
+        import asyncio
+
+        mock_ydl_instance = MagicMock()
+        mock_ydl_class.return_value.__enter__ = MagicMock(
+            return_value=mock_ydl_instance
+        )
+        mock_ydl_class.return_value.__exit__ = MagicMock(return_value=None)
+
+        mock_ydl_instance.extract_info.return_value = {
+            "title": "Multilingual Video",
+            "id": "multi_id",
+            "uploader": "Test Author",
+            "description": "Test desc",
+            "subtitles": {
+                "en": [{"text": "English caption", "start": 0.0, "end": 2.0}],
+                "es": [{"text": "Spanish caption", "start": 0.0, "end": 2.0}],
+                "fr": [{"text": "French caption", "start": 0.0, "end": 2.0}],
+            },
+        }
+
+        fetcher = YtDlpFetcher()
+        video_result = asyncio.run(
+            fetcher._extract_video_info("https://youtube.com/watch?v=multi")
+        )
+
+        # Verify captions dict exists in metadata
+        assert "captions" in video_result.metadata
+        captions = video_result.metadata["captions"]
+
+        # Verify all languages present
+        assert len(captions) == 3
+        assert "en" in captions
+        assert "es" in captions
+        assert "fr" in captions
+
+        # Verify structure
+        assert captions["en"][0]["text"] == "English caption"
+        assert captions["es"][0]["text"] == "Spanish caption"
+        assert captions["fr"][0]["text"] == "French caption"
+
+    @patch("yt_dlp.YoutubeDL")
+    def test_missing_captions_handled_gracefully(self, mock_ydl_class):
+        """Verify missing captions don't crash extraction.
+
+        Tests that _extract_video_info handles videos without captions
+        gracefully, storing empty captions dict.
+        """
+        import asyncio
+
+        mock_ydl_instance = MagicMock()
+        mock_ydl_class.return_value.__enter__ = MagicMock(
+            return_value=mock_ydl_instance
+        )
+        mock_ydl_class.return_value.__exit__ = MagicMock(return_value=None)
+
+        # No subtitles field in response
+        mock_ydl_instance.extract_info.return_value = {
+            "title": "No Captions Video",
+            "id": "no_captions_id",
+            "uploader": "Test Author",
+            "description": "Video without captions",
+        }
+
+        fetcher = YtDlpFetcher()
+        video_result = asyncio.run(
+            fetcher._extract_video_info("https://youtube.com/watch?v=nocaptions")
+        )
+
+        # Verify captions key exists but is empty
+        assert "captions" in video_result.metadata
+        assert video_result.metadata["captions"] == {}
+        assert video_result.title == "No Captions Video"
+
+    def test_parse_captions_helper_method(self):
+        """Verify _parse_captions helper formats captions correctly.
+
+        Tests the _parse_captions method directly to ensure subtitle
+        formatting works independently.
+        """
+        fetcher = YtDlpFetcher()
+
+        # Sample yt-dlp subtitles format
+        subtitles_dict = {
+            "en": [
+                {"text": "Hello", "start": 0.0, "end": 1.0},
+                {"text": "World", "start": 1.0, "end": 2.0},
+            ],
+            "es": [
+                {"text": "Hola", "start": 0.0, "end": 1.0},
+            ],
+        }
+
+        result = fetcher._parse_captions(subtitles_dict)
+
+        # Verify structure
+        assert "en" in result
+        assert "es" in result
+        assert len(result["en"]) == 2
+        assert len(result["es"]) == 1
+
+        # Verify content
+        assert result["en"][0] == {"text": "Hello", "start": 0.0, "end": 1.0}
+        assert result["en"][1] == {"text": "World", "start": 1.0, "end": 2.0}
+        assert result["es"][0] == {"text": "Hola", "start": 0.0, "end": 1.0}
+
+    @patch("yt_dlp.YoutubeDL")
+    def test_download_not_called_by_default(self, mock_ydl_class):
+        """Verify full video download is NOT called by default.
+
+        Tests that _extract_video_info with default config does not
+        attempt to download the video file (only captions).
+        """
+        import asyncio
+
+        mock_ydl_instance = MagicMock()
+        mock_ydl_class.return_value.__enter__ = MagicMock(
+            return_value=mock_ydl_instance
+        )
+        mock_ydl_class.return_value.__exit__ = MagicMock(return_value=None)
+
+        mock_ydl_instance.extract_info.return_value = {
+            "title": "Test Video",
+            "id": "test_id",
+            "uploader": "Test Author",
+            "description": "Test desc",
+        }
+
+        fetcher = YtDlpFetcher()  # Default: download_full_video=False
+        video_result = asyncio.run(
+            fetcher._extract_video_info("https://youtube.com/watch?v=test")
+        )
+
+        # Verify download was not called
+        assert "video_file_path" not in video_result.metadata
+        # download() should never be called
+        mock_ydl_instance.download.assert_not_called()
 
 
 class TestYtDlpFetcherErrorHandling:
@@ -601,8 +813,9 @@ class TestYtDlpFetcherChannelEnumeration:
 
         assert len(result.items) == 1
         assert result.items[0].title == "Single Video"
-        # extract_info should only be called once for single video
-        assert mock_ydl_instance.extract_info.call_count == 1
+        # extract_info is called twice: once for metadata, once for captions
+        # (no enumeration occurs for single video URLs)
+        assert mock_ydl_instance.extract_info.call_count == 2
 
     @patch("yt_dlp.YoutubeDL")
     def test_channel_with_mixed_availability(self, mock_ydl_class):

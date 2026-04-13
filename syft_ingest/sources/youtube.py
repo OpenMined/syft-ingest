@@ -350,8 +350,11 @@ class YtDlpFetcher:
         """Extract metadata from a single YouTube video.
 
         Uses yt-dlp to extract structured metadata from the video,
-        then maps it to a VideoResult model. Optionally downloads the video
-        if download=True and config['download_full_video']=True.
+        then maps it to a VideoResult model. Extracts captions/subtitles with
+        timestamps as the primary acquisition method.
+
+        Optionally downloads the video if download=True and
+        config['download_full_video']=True (advanced feature).
 
         Args:
             video_url: YouTube video URL.
@@ -359,7 +362,7 @@ class YtDlpFetcher:
             output_dir: Directory to save downloaded video (required if download=True).
 
         Returns:
-            VideoResult with extracted metadata, or None if not found.
+            VideoResult with extracted metadata including captions, or None if not found.
 
         Raises:
             FetchAuthError: Age-restricted or private video.
@@ -370,7 +373,7 @@ class YtDlpFetcher:
         logger.debug("Extracting metadata for {url}", url=video_url)
 
         try:
-            # Configure yt-dlp options
+            # Configure yt-dlp options for metadata extraction
             ydl_opts = {
                 "socket_timeout": self._config.get("socket_timeout", 30),
                 "quiet": True,
@@ -413,6 +416,31 @@ class YtDlpFetcher:
                 "thumbnail_url": thumbnail_url,
             }
 
+            # Extract captions/subtitles with timestamps (primary acquisition method)
+            captions = {}
+            try:
+                ydl_opts_captions = {
+                    "writesubtitles": True,
+                    "allsubtitles": False,
+                    "subtitlesformat": "json3",  # Returns structured data with timestamps
+                    "skip_download": True,
+                    "quiet": True,
+                    "no_warnings": True,
+                    "socket_timeout": self._config.get("socket_timeout", 30),
+                }
+                with yt_dlp.YoutubeDL(ydl_opts_captions) as ydl:
+                    info_captions = ydl.extract_info(video_url, download=False)
+                    if info_captions.get("subtitles"):
+                        captions = self._parse_captions(info_captions["subtitles"])
+                        logger.debug(
+                            "Extracted captions in {n} languages", n=len(captions)
+                        )
+            except Exception as e:
+                logger.debug("Could not extract captions: {error}", error=e)
+
+            # Store captions in metadata
+            metadata["captions"] = captions
+
             # Create VideoResult
             video_result = VideoResult(
                 title=title,
@@ -426,7 +454,8 @@ class YtDlpFetcher:
                 metadata=metadata,
             )
 
-            # Optionally download video if enabled
+            # Optionally download video if enabled (advanced feature)
+            # Note: video download is opt-in, not called by default
             if (
                 download
                 and self._config.get("download_full_video", False)
@@ -491,6 +520,44 @@ class YtDlpFetcher:
                 exc_info=True,
             )
             raise FetchError(f"Unexpected error: {str(e)}", platform="youtube") from e
+
+    def _parse_captions(self, subtitles_dict: dict) -> dict:
+        """Parse yt-dlp captions to structured format with timestamps.
+
+        Converts yt-dlp's JSON3 subtitle format into a structured dictionary
+        with language codes as keys and lists of caption entries with text,
+        start time, and end time.
+
+        Args:
+            subtitles_dict: {language: [...caption entries...]}, where each
+                entry has 'text', 'start', and 'end' fields from yt-dlp.
+
+        Returns:
+            {language: [{"text": "...", "start": seconds, "end": seconds}, ...]}
+
+        Example:
+            Input: {"en": [{"text": "Hello", "start": 0.5, "end": 2.0}, ...]}
+            Output: {"en": [{"text": "Hello", "start": 0.5, "end": 2.0}, ...]}
+        """
+        parsed = {}
+
+        for lang, entries in subtitles_dict.items():
+            if isinstance(entries, list):
+                parsed[lang] = [
+                    {
+                        "text": e.get("text", ""),
+                        "start": e.get("start"),
+                        "end": e.get("end"),
+                    }
+                    for e in entries
+                ]
+
+        logger.debug(
+            "Parsed captions for {n} languages: {langs}",
+            n=len(parsed),
+            langs=list(parsed.keys()),
+        )
+        return parsed
 
     async def _download_video(self, video_url: str, output_dir: Path) -> Path:
         """Download a video with best video+audio combo.
