@@ -614,18 +614,19 @@ def test_parse_instagram_video_post(brightdata_fetcher):
 
 def test_parse_facebook_posts_response(brightdata_fetcher):
     """Parse Facebook posts response into SocialPostResult."""
-    raw_data = {
-        "posts": [
-            {
-                "id": "789",
-                "message": "My post",
-                "created_time": "2026-01-01T12:00:00Z",
-                "from": {"name": "Test Author"},
-                "like_count": 50,
-                "comment_count": 10,
-            }
-        ]
-    }
+    raw_data = [
+        {
+            "post_id": "789",
+            "content": "My post",
+            "date_posted": "2026-01-01T12:00:00Z",
+            "page_name": "Test Author",
+            "url": "https://facebook.com/post/789",
+            "likes": 50,
+            "num_comments": 10,
+            "num_shares": 0,
+            "post_type": "Post",
+        }
+    ]
 
     items = brightdata_fetcher._parse_response(raw_data, "facebook")
 
@@ -641,26 +642,28 @@ def test_parse_facebook_posts_response(brightdata_fetcher):
 
 def test_parse_facebook_video_response(brightdata_fetcher):
     """Parse Facebook video post as ReelResult."""
-    raw_data = {
-        "posts": [
-            {
-                "id": "990",
-                "type": "video",
-                "message": "Check this",
-                "video": {"length": 120},
-                "created_time": "2026-01-01T12:00:00Z",
-                "from": {"name": "Author"},
-                "like_count": 30,
-            }
-        ]
-    }
+    raw_data = [
+        {
+            "post_id": "990",
+            "content": "Check this",
+            "date_posted": "2026-01-01T12:00:00Z",
+            "page_name": "Author",
+            "url": "https://facebook.com/reel/990",
+            "likes": 30,
+            "num_comments": 0,
+            "num_shares": 0,
+            "post_type": "Reel",
+            "video_view_count": 100,
+            "attachments": [{"type": "Video", "video_length": "120000"}],
+        }
+    ]
 
     items = brightdata_fetcher._parse_response(raw_data, "facebook")
 
     assert len(items) == 1
     assert isinstance(items[0], ReelResult)
     assert items[0].source_type == SourceType.FACEBOOK
-    assert items[0].duration_seconds == 120
+    assert items[0].duration_seconds == 120.0
     assert items[0].likes_count == 30
 
 
@@ -701,17 +704,29 @@ async def test_empty_result_error_in_fetch(brightdata_fetcher):
 
 def test_parse_error_handling_skips_bad_items(brightdata_fetcher):
     """Parse errors skip bad items but keep good ones."""
-    raw_data = {
-        "posts": [
-            {"id": "good", "message": "OK", "from": {"name": "User"}},
-            {"id": "bad"},  # Missing required fields
-            {"id": "good2", "message": "Also OK", "from": {"name": "User2"}},
-        ]
-    }
+    raw_data = [
+        {
+            "post_id": "good",
+            "content": "OK",
+            "page_name": "User",
+            "url": "https://fb.com/1",
+            "post_type": "Post",
+        },
+        {
+            "post_id": "bad"
+        },  # Missing fields but still parseable (content defaults to "")
+        {
+            "post_id": "good2",
+            "content": "Also OK",
+            "page_name": "User2",
+            "url": "https://fb.com/3",
+            "post_type": "Post",
+        },
+    ]
 
     items = brightdata_fetcher._parse_response(raw_data, "facebook")
 
-    # Should have at least the good items
+    # All items should parse (content defaults to empty string for bad item)
     assert len(items) >= 2
     assert any(item.text == "OK" for item in items)
     assert any(item.text == "Also OK" for item in items)
@@ -719,16 +734,16 @@ def test_parse_error_handling_skips_bad_items(brightdata_fetcher):
 
 def test_unparseable_date_handled_gracefully(brightdata_fetcher):
     """Unparseable dates are handled gracefully (None, not exception)."""
-    raw_data = {
-        "posts": [
-            {
-                "id": "123",
-                "message": "Post",
-                "created_time": "invalid-date",
-                "from": {"name": "User"},
-            }
-        ]
-    }
+    raw_data = [
+        {
+            "post_id": "123",
+            "content": "Post",
+            "date_posted": "invalid-date",
+            "page_name": "User",
+            "url": "https://fb.com/123",
+            "post_type": "Post",
+        }
+    ]
 
     items = brightdata_fetcher._parse_response(raw_data, "facebook")
 

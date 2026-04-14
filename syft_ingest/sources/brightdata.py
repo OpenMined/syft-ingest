@@ -53,8 +53,9 @@ except ImportError as e:
 class BrightDataFetcher:
     """Strategy fetcher for Facebook and Instagram via Bright Data API.
 
-    Implements the AsyncContentFetcher protocol. The fetch_async() method is
-    natively async. Takes a FetchRequest with platform (facebook/instagram) and
+    Implements the AsyncContentFetcher (@runtime_checkable protocol).
+    isinstance(fetcher, AsyncContentFetcher) returns True as long as the object has a `fetch_async` method.
+    Takes a FetchRequest with platform (facebook/instagram) and
     URLs, triggers a scrape job via the Bright Data SDK, polls until completion
     or timeout, and returns results.
 
@@ -407,34 +408,41 @@ class BrightDataFetcher:
 
         return items
 
-    def _parse_facebook_response(self, raw_data: dict[str, Any]) -> list[ContentItem]:
+    def _parse_facebook_response(
+        self, raw_data: dict[str, Any] | list[dict[str, Any]]
+    ) -> list[ContentItem]:
         """Parse Facebook scraper response into ContentItem list.
 
-        Handles text/image posts and video posts.
+        BrightData returns a flat list of post dicts (not wrapped in {"posts": [...]}).
+        Each post has fields: post_id, content, date_posted, page_name, url,
+        likes, num_comments, num_shares, post_type, attachments, etc.
 
         Args:
-            raw_data: Response dict from Facebook scraper.
+            raw_data: Response from BrightData — either a list of post dicts
+                      or a dict with a "posts" key (legacy format).
 
         Returns:
             List of SocialPostResult or ReelResult items.
         """
         items: list[ContentItem] = []
 
-        for post in raw_data.get("posts", []):
-            try:
-                post_id = post.get("id", "Unknown Post")
-                message = post.get("message", "")
-                story = post.get("story", "")
-                text = message or story
-                created_time_str = post.get("created_time")
-                permalink_url = post.get("permalink_url") or post.get("link", "")
+        # BrightData returns a flat list; legacy format wraps in {"posts": [...]}
+        if isinstance(raw_data, list):
+            posts = raw_data
+        elif isinstance(raw_data, dict):
+            posts = raw_data.get("posts", [])
+        else:
+            return items
 
-                # Extract author
-                author = "Unknown"
-                if isinstance(post.get("from"), dict):
-                    author = post["from"].get("name", "Unknown")
-                elif isinstance(post.get("author"), str):
-                    author = post["author"]
+        for post in posts:
+            try:
+                post_id = post.get("post_id", "Unknown Post")
+                text = post.get("content", "")
+                created_time_str = post.get("date_posted")
+                permalink_url = post.get("url", "")
+                author = post.get("page_name") or post.get(
+                    "user_username_raw", "Unknown"
+                )
 
                 # Parse datetime if provided
                 published_at = None
@@ -446,42 +454,36 @@ class BrightDataFetcher:
                     except (ValueError, AttributeError):
                         logger.debug("Could not parse date {}", created_time_str)
 
-                # Extract engagement metrics
-                likes_count = 0
-                if isinstance(post.get("likes"), dict):
-                    likes_count = len(post["likes"].get("data", []))
-                elif isinstance(post.get("like_count"), int):
-                    likes_count = post["like_count"]
+                # Engagement metrics
+                likes_count = post.get("likes", 0) or 0
+                comments_count = post.get("num_comments", 0) or 0
+                shares_count = post.get("num_shares", 0) or 0
 
-                comments_count = 0
-                if isinstance(post.get("comments"), dict):
-                    comments_count = len(post["comments"].get("data", []))
-                elif isinstance(post.get("comment_count"), int):
-                    comments_count = post["comment_count"]
-
-                shares_count = 0
-                if isinstance(post.get("shares"), dict):
-                    shares_count = post["shares"].get("count", 0)
-
-                # Check for video
+                # Detect video/reel posts
+                post_type = post.get("post_type", "").lower()
                 is_video = (
-                    post.get("type") == "video"
-                    or "video" in post
-                    or post.get("is_video", False)
+                    post_type == "reel" or post.get("video_view_count") is not None
                 )
 
+                # Extract media URLs from attachments
+                media_urls = []
+                attachments = post.get("attachments", [])
+                for att in attachments:
+                    if att.get("video_url"):
+                        media_urls.append(att["video_url"])
+                    elif att.get("url"):
+                        media_urls.append(att["url"])
+
                 if is_video:
-                    video_data = post.get("video", {})
-                    duration = (
-                        video_data.get("length")
-                        if isinstance(video_data, dict)
-                        else None
-                    )
-                    media_urls = (
-                        [video_data.get("source")]
-                        if isinstance(video_data, dict) and video_data.get("source")
-                        else []
-                    )
+                    # Parse duration from first video attachment (milliseconds -> seconds)
+                    duration = None
+                    for att in attachments:
+                        if att.get("video_length"):
+                            try:
+                                duration = int(att["video_length"]) / 1000
+                            except (ValueError, TypeError):
+                                pass
+                            break
 
                     item = ReelResult(
                         title=post_id,
@@ -507,6 +509,7 @@ class BrightDataFetcher:
                         likes_count=likes_count,
                         comments_count=comments_count,
                         shares_count=shares_count,
+                        media_urls=media_urls,
                     )
 
                 items.append(item)

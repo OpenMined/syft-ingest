@@ -82,37 +82,40 @@ def mock_instagram_posts_response():
 
 @pytest.fixture
 def mock_facebook_posts_response():
-    """Sample Facebook posts response."""
-    return {
-        "posts": [
-            {
-                "id": "post-001",
-                "message": "Test post",
-                "created_time": "2026-01-01T12:00:00Z",
-                "from": {"name": "Test Author"},
-                "like_count": 50,
-                "comment_count": 10,
-            }
-        ]
-    }
+    """Sample Facebook posts response (BrightData flat list format)."""
+    return [
+        {
+            "post_id": "post-001",
+            "content": "Test post",
+            "date_posted": "2026-01-01T12:00:00Z",
+            "page_name": "Test Author",
+            "url": "https://facebook.com/post/001",
+            "likes": 50,
+            "num_comments": 10,
+            "num_shares": 0,
+            "post_type": "Post",
+        }
+    ]
 
 
 @pytest.fixture
 def mock_facebook_video_response():
-    """Sample Facebook video response."""
-    return {
-        "posts": [
-            {
-                "id": "video-001",
-                "type": "video",
-                "message": "Check this video",
-                "video": {"length": 120},
-                "created_time": "2026-01-01T12:00:00Z",
-                "from": {"name": "Video Author"},
-                "like_count": 30,
-            }
-        ]
-    }
+    """Sample Facebook video response (BrightData flat list format)."""
+    return [
+        {
+            "post_id": "video-001",
+            "content": "Check this video",
+            "date_posted": "2026-01-01T12:00:00Z",
+            "page_name": "Video Author",
+            "url": "https://facebook.com/reel/001",
+            "likes": 30,
+            "num_comments": 0,
+            "num_shares": 0,
+            "post_type": "Reel",
+            "video_view_count": 100,
+            "attachments": [{"type": "Video", "video_length": "120000"}],
+        }
+    ]
 
 
 # ---- Registry dispatch tests ----
@@ -331,7 +334,7 @@ async def test_end_to_end_facebook_video_fetch(
         assert len(result.items) == 1
         assert isinstance(result.items[0], ReelResult)
         assert result.items[0].source_type == SourceType.FACEBOOK
-        assert result.items[0].duration_seconds == 120
+        assert result.items[0].duration_seconds == 120.0
 
 
 # ---- Sync wrapper tests ----
