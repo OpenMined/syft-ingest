@@ -54,8 +54,8 @@ class YtDlpFetcher:
     2. Channel/playlist enumeration (Plan 03-02)
     3. Optional full video+audio download (Plan 03-02)
 
-    The fetch() method is synchronous (matching the ContentFetcher protocol),
-    but internally uses async/await via asyncio.run().
+    All methods are synchronous — yt-dlp is a sync-native library.
+    Async callers should use asyncio.to_thread(fetcher.fetch, request).
 
     Attributes:
         _config: Configuration dict with socket_timeout, playlistend, download_full_video.
@@ -85,35 +85,6 @@ class YtDlpFetcher:
         )
 
     def fetch(self, request: FetchRequest) -> FetchResult:
-        """Synchronous wrapper for async _fetch_async.
-
-        Runs the async method using asyncio.run(). This bridges the
-        ContentFetcher protocol (sync) with the async implementation.
-
-        Args:
-            request: Fetch request with platform, URLs, and config.
-
-        Returns:
-            FetchResult with items and optional artifact_paths.
-
-        Raises:
-            FetchAuthError: Age-restricted or private video.
-            FetchEmptyResultError: Video not found.
-            FetchTimeoutError: Request timeout exceeded.
-            FetchError: Generic extraction failure.
-        """
-        import asyncio
-        import concurrent.futures
-
-        coro = self._fetch_async(request)
-        try:
-            asyncio.get_running_loop()
-        except RuntimeError:
-            return asyncio.run(coro)
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            return pool.submit(asyncio.run, coro).result()
-
-    async def _fetch_async(self, request: FetchRequest) -> FetchResult:
         """Fetch and extract metadata for YouTube videos or channels.
 
         Detects channel/playlist URLs and enumerates videos, or processes single videos.
@@ -134,7 +105,10 @@ class YtDlpFetcher:
             FetchResult with extracted VideoResult items and artifact_paths.
 
         Raises:
-            FetchAuthError, FetchEmptyResultError, FetchError as appropriate.
+            FetchAuthError: Age-restricted or private video.
+            FetchEmptyResultError: Video not found.
+            FetchTimeoutError: Request timeout exceeded.
+            FetchError: Generic extraction failure.
         """
         items: list[VideoResult] = []
         artifact_paths: dict[str, Path] = {}
@@ -160,7 +134,7 @@ class YtDlpFetcher:
             if is_channel:
                 logger.info("Detected channel/playlist URL: {url}", url=first_url)
                 # Enumerate videos from channel
-                video_urls = await self._enumerate_channel(
+                video_urls = self._enumerate_channel(
                     first_url,
                     limit=effective_config.get("playlistend", DEFAULT_PLAYLIST_LIMIT),
                     config=effective_config,
@@ -170,7 +144,7 @@ class YtDlpFetcher:
                 # Extract metadata for each video
                 for video_url in video_urls:
                     try:
-                        video_result = await self._extract_video_info_and_captions(
+                        video_result = self._extract_video_info_and_captions(
                             video_url,
                             download=download_enabled,
                             output_dir=output_dir,
@@ -223,7 +197,7 @@ class YtDlpFetcher:
                 # Single video: extract metadata for each URL
                 for video_url in request.urls:
                     try:
-                        video_result = await self._extract_video_info_and_captions(
+                        video_result = self._extract_video_info_and_captions(
                             video_url,
                             download=download_enabled,
                             output_dir=output_dir,
@@ -268,7 +242,7 @@ class YtDlpFetcher:
             raise
         except Exception as e:
             # Log unexpected errors
-            logger.error("Unexpected error in _fetch_async: {error}", error=e)
+            logger.error("Unexpected error in fetch: {error}", error=e)
             raise FetchError(f"Unexpected error: {str(e)}", platform="youtube") from e
 
         # Raise FetchEmptyResultError if no items extracted
@@ -315,7 +289,7 @@ class YtDlpFetcher:
             pattern in url for pattern in ["/channel/", "/@", "/playlist", "/c/"]
         )
 
-    async def _enumerate_channel(
+    def _enumerate_channel(
         self,
         channel_url: str,
         limit: int = DEFAULT_PLAYLIST_LIMIT,
@@ -392,7 +366,7 @@ class YtDlpFetcher:
                 platform="youtube",
             ) from e
 
-    async def _extract_video_info_and_captions(
+    def _extract_video_info_and_captions(
         self,
         video_url: str,
         download: bool = False,
@@ -556,7 +530,7 @@ class YtDlpFetcher:
                 and output_dir
             ):
                 try:
-                    file_path = await self._download_video(
+                    file_path = self._download_video(
                         video_url, output_dir, config=effective_config
                     )
                     video_result.metadata["video_file_path"] = str(file_path)
@@ -652,7 +626,7 @@ class YtDlpFetcher:
 
         return segments
 
-    async def _download_video(
+    def _download_video(
         self, video_url: str, output_dir: Path, config: dict | None = None
     ) -> Path:
         """Download a video with best video+audio combo.
