@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from syft_ingest.core.fetcher import ContentFetcher
+from syft_ingest.core.fetcher import AsyncContentFetcher, ContentFetcher
 from syft_ingest.core.registry import reset_registry
 from syft_ingest.core.url_router import (
     InvalidURLError,
@@ -63,11 +63,11 @@ def test_dispatch_instagram_url_to_brightdata_fetcher():
     # Verify instance type
     assert isinstance(fetcher, BrightDataFetcher)
 
-    # Verify protocol compliance
-    assert isinstance(fetcher, ContentFetcher)
+    # Verify protocol compliance (BrightDataFetcher is AsyncContentFetcher)
+    assert isinstance(fetcher, AsyncContentFetcher)
 
-    # Verify has fetch method
-    assert callable(getattr(fetcher, "fetch", None))
+    # Verify has fetch_async method
+    assert callable(getattr(fetcher, "fetch_async", None))
 
 
 def test_dispatch_instagram_www_url_to_brightdata_fetcher():
@@ -76,7 +76,7 @@ def test_dispatch_instagram_www_url_to_brightdata_fetcher():
     fetcher = get_fetcher_for_url(url)
 
     assert isinstance(fetcher, BrightDataFetcher)
-    assert isinstance(fetcher, ContentFetcher)
+    assert isinstance(fetcher, AsyncContentFetcher)
 
 
 def test_dispatch_facebook_url_to_brightdata_fetcher():
@@ -87,11 +87,11 @@ def test_dispatch_facebook_url_to_brightdata_fetcher():
     # Verify instance type
     assert isinstance(fetcher, BrightDataFetcher)
 
-    # Verify protocol compliance
-    assert isinstance(fetcher, ContentFetcher)
+    # Verify protocol compliance (BrightDataFetcher is AsyncContentFetcher)
+    assert isinstance(fetcher, AsyncContentFetcher)
 
-    # Verify has fetch method
-    assert callable(getattr(fetcher, "fetch", None))
+    # Verify has fetch_async method
+    assert callable(getattr(fetcher, "fetch_async", None))
 
 
 def test_dispatch_facebook_www_url_to_brightdata_fetcher():
@@ -100,7 +100,7 @@ def test_dispatch_facebook_www_url_to_brightdata_fetcher():
     fetcher = get_fetcher_for_url(url)
 
     assert isinstance(fetcher, BrightDataFetcher)
-    assert isinstance(fetcher, ContentFetcher)
+    assert isinstance(fetcher, AsyncContentFetcher)
 
 
 def test_dispatch_unsupported_platform_raises_error():
@@ -175,22 +175,22 @@ def test_youtube_fetcher_satisfies_protocol():
 
 
 def test_brightdata_fetcher_satisfies_protocol():
-    """Dispatched BrightData fetcher implements ContentFetcher protocol."""
+    """Dispatched BrightData fetcher implements AsyncContentFetcher protocol."""
     url = "https://instagram.com/username"
     fetcher = get_fetcher_for_url(url)
 
-    # Runtime checkable protocol - this should always be True
-    assert isinstance(fetcher, ContentFetcher)
+    # Runtime checkable protocol - BrightDataFetcher is AsyncContentFetcher
+    assert isinstance(fetcher, AsyncContentFetcher)
 
 
-def test_dispatched_fetcher_has_fetch_method():
-    """Dispatched fetcher has callable fetch method."""
+def test_dispatched_fetcher_has_fetch_async_method():
+    """Dispatched BrightData fetcher has callable fetch_async method."""
     url = "https://facebook.com/page"
     fetcher = get_fetcher_for_url(url)
 
-    # Verify fetch method exists and is callable
-    assert hasattr(fetcher, "fetch")
-    assert callable(fetcher.fetch)
+    # BrightDataFetcher implements AsyncContentFetcher - verify fetch_async exists
+    assert hasattr(fetcher, "fetch_async")
+    assert callable(fetcher.fetch_async)
 
 
 def test_all_supported_platforms_dispatch():

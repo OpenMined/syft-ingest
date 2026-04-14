@@ -10,6 +10,7 @@ from syft_ingest.core.fetcher import (
     FetchAuthError,
     FetchEmptyResultError,
     FetchRequest,
+    run_fetcher_sync,
 )
 from syft_ingest.core.models import (
     ProfileResult,
@@ -139,11 +140,11 @@ def test_registry_dispatch_instagram(brightdata_fetcher):
     assert fetcher is brightdata_fetcher
 
 
-def test_fetcher_implements_content_fetcher_protocol(brightdata_fetcher):
-    """BrightDataFetcher implements ContentFetcher protocol."""
-    from syft_ingest.core.fetcher import ContentFetcher
+def test_fetcher_implements_async_content_fetcher_protocol(brightdata_fetcher):
+    """BrightDataFetcher implements AsyncContentFetcher protocol."""
+    from syft_ingest.core.fetcher import AsyncContentFetcher
 
-    assert isinstance(brightdata_fetcher, ContentFetcher)
+    assert isinstance(brightdata_fetcher, AsyncContentFetcher)
 
 
 # ---- End-to-end fetch tests ----
@@ -174,7 +175,7 @@ async def test_end_to_end_instagram_fetch(
     with patch("syft_ingest.sources.brightdata.BrightDataClient") as mock_client_class:
         mock_client_class.return_value.__aenter__.return_value = mock_client
 
-        result = await brightdata_fetcher._fetch_async(request)
+        result = await brightdata_fetcher.fetch_async(request)
 
         assert result.remote_job_id == "job-ig-e2e"
         assert result.remote_status == "ready"
@@ -212,7 +213,7 @@ async def test_end_to_end_facebook_fetch(
     with patch("syft_ingest.sources.brightdata.BrightDataClient") as mock_client_class:
         mock_client_class.return_value.__aenter__.return_value = mock_client
 
-        result = await brightdata_fetcher._fetch_async(request)
+        result = await brightdata_fetcher.fetch_async(request)
 
         assert result.remote_job_id == "job-fb-e2e"
         assert result.remote_status == "ready"
@@ -249,7 +250,7 @@ async def test_end_to_end_with_timeout_config(
     with patch("syft_ingest.sources.brightdata.BrightDataClient") as mock_client_class:
         mock_client_class.return_value.__aenter__.return_value = mock_client
 
-        await brightdata_fetcher._fetch_async(request)
+        await brightdata_fetcher.fetch_async(request)
 
         # Verify job.wait() was called with custom timeout and poll_interval
         call_kwargs = mock_job.wait.call_args[1]
@@ -280,7 +281,7 @@ async def test_end_to_end_empty_result_error(brightdata_fetcher):
         mock_client_class.return_value.__aenter__.return_value = mock_client
 
         with pytest.raises(FetchEmptyResultError):
-            await brightdata_fetcher._fetch_async(request)
+            await brightdata_fetcher.fetch_async(request)
 
 
 @pytest.mark.asyncio
@@ -298,7 +299,7 @@ async def test_end_to_end_auth_error_flow(brightdata_fetcher):
         mock_client_class.side_effect = AuthenticationError("Unauthorized")
 
         with pytest.raises(FetchAuthError):
-            await brightdata_fetcher._fetch_async(request)
+            await brightdata_fetcher.fetch_async(request)
 
 
 @pytest.mark.asyncio
@@ -325,7 +326,7 @@ async def test_end_to_end_facebook_video_fetch(
     with patch("syft_ingest.sources.brightdata.BrightDataClient") as mock_client_class:
         mock_client_class.return_value.__aenter__.return_value = mock_client
 
-        result = await brightdata_fetcher._fetch_async(request)
+        result = await brightdata_fetcher.fetch_async(request)
 
         assert len(result.items) == 1
         assert isinstance(result.items[0], ReelResult)
@@ -337,7 +338,7 @@ async def test_end_to_end_facebook_video_fetch(
 
 
 def test_end_to_end_sync_fetch(brightdata_fetcher, mock_instagram_profile_response):
-    """Sync fetch() method works end-to-end with registry."""
+    """Sync bridge run_fetcher_sync() works end-to-end with BrightDataFetcher."""
     request = FetchRequest(
         platform=Platform.INSTAGRAM,
         extractor="brightdata",
@@ -357,7 +358,7 @@ def test_end_to_end_sync_fetch(brightdata_fetcher, mock_instagram_profile_respon
     with patch("syft_ingest.sources.brightdata.BrightDataClient") as mock_client_class:
         mock_client_class.return_value.__aenter__.return_value = mock_client
 
-        result = brightdata_fetcher.fetch(request)
+        result = run_fetcher_sync(brightdata_fetcher, request)
 
         assert result.remote_status == "ready"
         assert len(result.items) == 1
