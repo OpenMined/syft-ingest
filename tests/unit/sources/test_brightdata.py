@@ -570,16 +570,15 @@ def test_parse_instagram_posts_response(brightdata_fetcher):
 
     items = brightdata_fetcher._parse_response(raw_data, "instagram")
 
-    # First item is the profile ContentItem, second is the post ContentItem
-    assert len(items) == 2
+    # The legacy format produces one ContentItem per nested post (no top-level profile item)
+    assert len(items) == 1
     assert isinstance(items[0], ContentItem)
-    assert isinstance(items[1], ContentItem)
-    assert items[1].text == "Great photo"
-    assert items[1].author == "testuser"
-    assert items[1].metadata["likes"] == 100
-    assert items[1].metadata["comments"] == 5
-    assert items[1].published_at is not None
-    assert items[1].source_type == SourceType.INSTAGRAM
+    assert items[0].text == "Great photo"
+    assert items[0].author == "testuser"
+    assert items[0].metadata["likes"] == 100
+    assert items[0].metadata["comments"] == 5
+    assert items[0].published_at is not None
+    assert items[0].source_type == SourceType.INSTAGRAM
 
 
 def test_parse_instagram_video_post(brightdata_fetcher):
@@ -606,12 +605,12 @@ def test_parse_instagram_video_post(brightdata_fetcher):
 
     items = brightdata_fetcher._parse_response(raw_data, "instagram")
 
-    # Profile ContentItem + post ContentItem
-    assert len(items) == 2
-    assert isinstance(items[1], ContentItem)
-    assert items[1].source_type == SourceType.INSTAGRAM
-    assert items[1].metadata["likes"] == 200
-    assert items[1].metadata["content_type"] == "Video"
+    # The legacy format produces one ContentItem per nested post (no top-level profile item)
+    assert len(items) == 1
+    assert isinstance(items[0], ContentItem)
+    assert items[0].source_type == SourceType.INSTAGRAM
+    assert items[0].metadata["likes"] == 200
+    assert items[0].metadata["content_type"] == "Video"
 
 
 def test_parse_facebook_posts_response(brightdata_fetcher):
@@ -751,6 +750,234 @@ def test_unparseable_date_handled_gracefully(brightdata_fetcher):
 
     assert len(items) == 1
     assert items[0].published_at is None  # Not parsed, but no exception
+
+
+# ---- start_date date conversion tests ----
+
+
+def test_to_sdk_date_converts_iso_to_mm_dd_yyyy():
+    """_to_sdk_date converts YYYY-MM-DD to MM-DD-YYYY (BrightData SDK format)."""
+    fetcher = BrightDataFetcher(token="test-token")
+    assert fetcher._to_sdk_date("2026-04-01") == "04-01-2026"
+    assert fetcher._to_sdk_date("2026-12-31") == "12-31-2026"
+
+
+def test_to_sdk_date_returns_none_for_none():
+    """_to_sdk_date returns None when no date provided."""
+    fetcher = BrightDataFetcher(token="test-token")
+    assert fetcher._to_sdk_date(None) is None
+
+
+def test_to_sdk_date_raises_for_invalid_format():
+    """_to_sdk_date raises ValueError for non-ISO date strings."""
+    fetcher = BrightDataFetcher(token="test-token")
+    with pytest.raises(ValueError, match="YYYY-MM-DD"):
+        fetcher._to_sdk_date("01-04-2026")  # Wrong format (MM-DD-YYYY input)
+    with pytest.raises(ValueError, match="YYYY-MM-DD"):
+        fetcher._to_sdk_date("not-a-date")
+
+
+# ---- start_date passthrough tests (Facebook) ----
+
+
+@pytest.mark.asyncio
+async def test_facebook_trigger_includes_start_date_when_provided(brightdata_fetcher):
+    """When start_date is set on FetchRequest, it is passed to posts_by_profile_trigger."""
+    request = FetchRequest(
+        platform=Platform.FACEBOOK,
+        extractor="brightdata",
+        urls=["https://facebook.com/testuser"],
+        start_date="2026-04-01",
+    )
+
+    mock_job = AsyncMock()
+    mock_job.snapshot_id = "job-fb-date"
+    mock_job.wait = AsyncMock()
+    mock_job.fetch = AsyncMock(
+        return_value=[
+            {
+                "post_id": "p1",
+                "content": "April post",
+                "date_posted": "2026-04-02T00:00:00Z",
+                "page_name": "Test Page",
+                "url": "https://facebook.com/p/p1",
+            }
+        ]
+    )
+
+    mock_client = AsyncMock()
+    mock_scraper = AsyncMock()
+    mock_scraper.posts_by_profile_trigger = AsyncMock(return_value=mock_job)
+    mock_client.scrape.facebook = mock_scraper
+
+    with patch("syft_ingest.sources.brightdata.BrightDataClient") as mock_client_class:
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+        await brightdata_fetcher.fetch_async(request)
+
+    call_kwargs = mock_scraper.posts_by_profile_trigger.call_args[1]
+    assert call_kwargs.get("start_date") == "04-01-2026"  # Converted to MM-DD-YYYY
+
+
+@pytest.mark.asyncio
+async def test_facebook_trigger_omits_start_date_when_none(brightdata_fetcher):
+    """When start_date is None, posts_by_profile_trigger is called without start_date kwarg."""
+    request = FetchRequest(
+        platform=Platform.FACEBOOK,
+        extractor="brightdata",
+        urls=["https://facebook.com/testuser"],
+        # No start_date
+    )
+
+    mock_job = AsyncMock()
+    mock_job.snapshot_id = "job-fb-nodate"
+    mock_job.wait = AsyncMock()
+    mock_job.fetch = AsyncMock(
+        return_value=[
+            {
+                "post_id": "p1",
+                "content": "Post",
+                "date_posted": "2026-01-01T00:00:00Z",
+                "page_name": "Test Page",
+                "url": "https://facebook.com/p/p1",
+            }
+        ]
+    )
+
+    mock_client = AsyncMock()
+    mock_scraper = AsyncMock()
+    mock_scraper.posts_by_profile_trigger = AsyncMock(return_value=mock_job)
+    mock_client.scrape.facebook = mock_scraper
+
+    with patch("syft_ingest.sources.brightdata.BrightDataClient") as mock_client_class:
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+        await brightdata_fetcher.fetch_async(request)
+
+    call_kwargs = mock_scraper.posts_by_profile_trigger.call_args[1]
+    assert "start_date" not in call_kwargs  # Must not pass start_date=None to SDK
+
+
+# ---- start_date passthrough tests (Instagram) ----
+
+
+@pytest.mark.asyncio
+async def test_instagram_search_includes_start_date_when_provided(brightdata_fetcher):
+    """When start_date is set on FetchRequest, it is passed to search.instagram.posts."""
+    from unittest.mock import MagicMock
+
+    request = FetchRequest(
+        platform=Platform.INSTAGRAM,
+        extractor="brightdata",
+        urls=["https://instagram.com/testuser"],
+        start_date="2026-04-01",
+    )
+
+    mock_result = MagicMock()
+    mock_result.snapshot_id = "snap-ig-date"
+    mock_result.data = [
+        {
+            "post_id": "ig1",
+            "description": "April post",
+            "user_posted": "testuser",
+            "likes": 10,
+            "num_comments": 0,
+            "date_posted": "2026-04-02T00:00:00Z",
+            "content_type": "Image",
+            "photos": [],
+            "url": "https://instagram.com/p/ig1",
+        }
+    ]
+
+    mock_client = AsyncMock()
+    mock_search_ig = AsyncMock()
+    mock_search_ig.posts = AsyncMock(return_value=mock_result)
+    mock_client.search.instagram = mock_search_ig
+
+    with patch("syft_ingest.sources.brightdata.BrightDataClient") as mock_client_class:
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+        await brightdata_fetcher.fetch_async(request)
+
+    call_kwargs = mock_search_ig.posts.call_args[1]
+    assert call_kwargs.get("start_date") == "04-01-2026"  # Converted to MM-DD-YYYY
+
+
+@pytest.mark.asyncio
+async def test_instagram_search_omits_start_date_when_none(brightdata_fetcher):
+    """When start_date is None, search.instagram.posts is called without start_date kwarg."""
+    from unittest.mock import MagicMock
+
+    request = FetchRequest(
+        platform=Platform.INSTAGRAM,
+        extractor="brightdata",
+        urls=["https://instagram.com/testuser"],
+        # No start_date
+    )
+
+    mock_result = MagicMock()
+    mock_result.snapshot_id = "snap-ig-nodate"
+    mock_result.data = [
+        {
+            "post_id": "ig1",
+            "description": "Post",
+            "user_posted": "testuser",
+            "likes": 5,
+            "num_comments": 0,
+            "date_posted": "2026-01-01T00:00:00Z",
+            "content_type": "Image",
+            "photos": [],
+            "url": "https://instagram.com/p/ig1",
+        }
+    ]
+
+    mock_client = AsyncMock()
+    mock_search_ig = AsyncMock()
+    mock_search_ig.posts = AsyncMock(return_value=mock_result)
+    mock_client.search.instagram = mock_search_ig
+
+    with patch("syft_ingest.sources.brightdata.BrightDataClient") as mock_client_class:
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+        await brightdata_fetcher.fetch_async(request)
+
+    call_kwargs = mock_search_ig.posts.call_args[1]
+    assert "start_date" not in call_kwargs  # Must not pass start_date=None to SDK
+
+
+# ---- gather() integration (unit level) ----
+
+
+def test_gather_passes_start_date_to_fetch_request(monkeypatch):
+    """start_date passed to gather() ends up in FetchRequest.start_date (not config dict)."""
+    from syft_ingest.core import gather as gather_module
+
+    captured_requests = []
+
+    def fake_run_fetcher_sync(fetcher, request):
+        captured_requests.append(request)
+        from syft_ingest.core.fetcher import FetchResult
+
+        return FetchResult(items=[])
+
+    monkeypatch.setattr(gather_module, "run_fetcher_sync", fake_run_fetcher_sync)
+    monkeypatch.setattr(gather_module, "_fetchers_registered", True)
+
+    from unittest.mock import MagicMock
+
+    dummy_fetcher = MagicMock()
+    dummy_fetcher.fetch = MagicMock(return_value=None)
+
+    from syft_ingest.core import registry as registry_module
+
+    monkeypatch.setattr(
+        registry_module, "get_fetcher", lambda platform, extractor: dummy_fetcher
+    )
+
+    from syft_ingest.core.gather import gather
+
+    gather("facebook", ["https://facebook.com/testuser"], start_date="2026-04-01")
+
+    assert len(captured_requests) == 1
+    req = captured_requests[0]
+    assert req.start_date == "2026-04-01"
+    assert "start_date" not in req.config  # Must NOT leak into config dict
 
 
 @pytest.mark.asyncio
