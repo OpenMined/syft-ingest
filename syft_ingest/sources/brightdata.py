@@ -281,7 +281,7 @@ class BrightDataFetcher:
             config: Optional config dict with `posts_limit` for testing.
 
         Returns:
-            List of ContentItem subclass instances (ProfileResult, SocialPostResult, or ReelResult).
+            List of ContentItem instances with raw BrightData data in metadata.
             Empty list if response is empty or None.
         """
         if not raw_data:
