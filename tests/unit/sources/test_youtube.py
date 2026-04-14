@@ -998,96 +998,26 @@ def test_to_ytdlp_date_conversion():
 
 
 @patch("yt_dlp.YoutubeDL")
-def test_enumerate_channel_with_start_date_filters(mock_ydl_class):
-    """Verify start_date filters out older videos after extraction."""
-    mock_ydl_instance = MagicMock()
-    mock_ydl_class.return_value.__enter__ = MagicMock(return_value=mock_ydl_instance)
-    mock_ydl_class.return_value.__exit__ = MagicMock(return_value=None)
-
-    mock_ydl_instance.extract_info.return_value = {
-        "entries": [
-            {
-                "url": "https://youtube.com/watch?v=new",
-                "id": "new",
-                "upload_date": "20260408",
-            },
-            {
-                "url": "https://youtube.com/watch?v=old",
-                "id": "old",
-                "upload_date": "20180621",
-            },
-        ]
-    }
-
-    fetcher = YtDlpFetcher()
-    urls = fetcher._enumerate_channel(
-        "https://youtube.com/@creator",
-        limit=50,
-        start_date="2026-04-01",
-    )
-
-    assert len(urls) == 1
-    assert "new" in urls[0]
-
-
-@patch("yt_dlp.YoutubeDL")
-def test_enumerate_channel_without_start_date_returns_all(mock_ydl_class):
-    """Verify all videos returned when start_date is None."""
-    mock_ydl_instance = MagicMock()
-    mock_ydl_class.return_value.__enter__ = MagicMock(return_value=mock_ydl_instance)
-    mock_ydl_class.return_value.__exit__ = MagicMock(return_value=None)
-
-    mock_ydl_instance.extract_info.return_value = {
-        "entries": [
-            {
-                "url": "https://youtube.com/watch?v=new",
-                "id": "new",
-                "upload_date": "20260408",
-            },
-            {
-                "url": "https://youtube.com/watch?v=old",
-                "id": "old",
-                "upload_date": "20180621",
-            },
-        ]
-    }
-
-    fetcher = YtDlpFetcher()
-    urls = fetcher._enumerate_channel(
-        "https://youtube.com/@creator",
-        limit=50,
-        start_date=None,
-    )
-
-    assert len(urls) == 2
-
-
-@patch("yt_dlp.YoutubeDL")
 def test_fetch_channel_with_start_date_filters_old_videos(mock_ydl_class):
     """Verify fetch() with start_date on a channel URL filters old videos.
 
-    Date filtering happens post-extraction in _enumerate_channel by comparing
-    each entry's upload_date against the start_date cutoff.
+    Date filtering happens post-extraction in _fetch_async by comparing
+    each video's published_at against the start_date cutoff.
+    Flat enumeration doesn't have upload dates, so all URLs are enumerated
+    but old videos are filtered after metadata extraction.
     """
     mock_ydl_instance = MagicMock()
     mock_ydl_class.return_value.__enter__ = MagicMock(return_value=mock_ydl_instance)
     mock_ydl_class.return_value.__exit__ = MagicMock(return_value=None)
 
-    # First call: channel enumeration (extract_flat=True)
-    # Second call: video metadata extraction
+    # Call 1: channel enumeration (extract_flat=True) — no dates available
+    # Call 2: metadata for video 1 (new, after cutoff)
+    # Call 3: metadata for video 2 (old, before cutoff)
     mock_ydl_instance.extract_info.side_effect = [
         {
             "entries": [
-                {
-                    "url": "https://youtube.com/watch?v=new",
-                    "id": "new",
-                    "upload_date": "20260408",
-                },
-                {
-                    "url": "https://youtube.com/watch?v=old",
-                    "id": "old",
-                    "upload_date": "20180621",
-                },
+                {"url": "https://youtube.com/watch?v=new", "id": "new"},
+                {"url": "https://youtube.com/watch?v=old", "id": "old"},
             ]
         },
         {
@@ -1095,6 +1025,14 @@ def test_fetch_channel_with_start_date_filters_old_videos(mock_ydl_class):
             "id": "new",
             "uploader": "Creator",
             "description": "A new video",
+            "upload_date": "20260408",
+        },
+        {
+            "title": "Old Video",
+            "id": "old",
+            "uploader": "Creator",
+            "description": "An old video",
+            "upload_date": "20180621",
         },
     ]
 
@@ -1107,6 +1045,6 @@ def test_fetch_channel_with_start_date_filters_old_videos(mock_ydl_class):
 
     result = fetcher.fetch(request)
 
-    # Only the new video should be fetched
+    # Only the new video should pass the date filter
     assert len(result.items) == 1
     assert result.items[0].title == "New Video"

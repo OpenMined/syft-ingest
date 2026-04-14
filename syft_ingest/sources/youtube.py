@@ -131,6 +131,15 @@ class YtDlpFetcher:
         is_channel = self._is_channel_url(first_url)
 
         try:
+            # Parse start_date cutoff for post-extraction filtering
+            start_date_cutoff = None
+            if request.start_date:
+                from datetime import datetime as dt
+
+                start_date_cutoff = dt.strptime(request.start_date, "%Y-%m-%d").replace(
+                    tzinfo=UTC
+                )
+
             if is_channel:
                 logger.info("Detected channel/playlist URL: {url}", url=first_url)
                 # Enumerate videos from channel
@@ -138,7 +147,6 @@ class YtDlpFetcher:
                     first_url,
                     limit=effective_config.get("playlistend", DEFAULT_PLAYLIST_LIMIT),
                     config=effective_config,
-                    start_date=request.start_date,
                 )
                 logger.info("Enumerated {n} videos from channel", n=len(video_urls))
 
@@ -152,6 +160,20 @@ class YtDlpFetcher:
                             config=effective_config,
                         )
                         if video_result:
+                            # Filter by start_date after extraction
+                            # (flat enumeration doesn't have dates)
+                            if (
+                                start_date_cutoff
+                                and video_result.published_at
+                                and video_result.published_at < start_date_cutoff
+                            ):
+                                logger.debug(
+                                    "Skipping {title} (published {date}, before {cutoff})",
+                                    title=video_result.title,
+                                    date=video_result.published_at,
+                                    cutoff=request.start_date,
+                                )
+                                continue
                             items.append(video_result)
 
                             # Track downloaded files
@@ -318,19 +340,18 @@ class YtDlpFetcher:
         channel_url: str,
         limit: int = DEFAULT_PLAYLIST_LIMIT,
         config: dict | None = None,
-        start_date: str | None = None,
     ) -> list[str]:
         """Enumerate video URLs from a channel/playlist using extract_flat.
 
         Uses yt-dlp's extract_flat=True for fast enumeration without downloading.
         Respects playlistend config for limiting results.
+        Note: Date filtering happens post-extraction in _fetch_async since
+        flat enumeration doesn't include upload dates.
 
         Args:
             channel_url: YouTube channel or playlist URL
             limit: Max videos to enumerate (default DEFAULT_PLAYLIST_LIMIT)
             config: Optional config dict (uses self._config if not provided)
-            start_date: ISO 8601 date string ("YYYY-MM-DD"). When provided,
-                only videos published on or after this date are enumerated.
 
         Returns:
             List of full video URLs
@@ -339,9 +360,8 @@ class YtDlpFetcher:
             FetchError: If enumeration fails
         """
         logger.debug(
-            "Enumerating channel with limit={limit}, start_date={start_date}",
+            "Enumerating channel with limit={limit}",
             limit=limit,
-            start_date=start_date,
         )
 
         # Use provided config or fall back to instance config
@@ -368,29 +388,18 @@ class YtDlpFetcher:
                     platform="youtube",
                 )
 
-            # Filter by start_date in our code (yt-dlp's dateafter
-            # doesn't work with extract_flat/download=False)
-            cutoff = self._to_ytdlp_date(start_date)  # "YYYYMMDD" or None
-
             video_urls = []
             for entry in info["entries"]:
                 if not entry:
                     continue
-
-                # Skip videos older than start_date
-                if cutoff and entry.get("upload_date"):
-                    if entry["upload_date"] < cutoff:
-                        continue
-
                 if "url" in entry:
                     video_urls.append(entry["url"])
                 elif "id" in entry:
                     video_urls.append(f"https://www.youtube.com/watch?v={entry['id']}")
 
             logger.info(
-                "Enumerated {n} videos from channel{filter_msg}",
+                "Enumerated {n} videos from channel",
                 n=len(video_urls),
-                filter_msg=f" (after {start_date})" if start_date else "",
             )
             return video_urls
 
