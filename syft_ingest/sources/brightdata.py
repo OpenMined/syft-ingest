@@ -1,6 +1,6 @@
 """Bright Data API client for programmatic content acquisition.
 
-Implements ContentFetcher for Facebook and Instagram via the official Bright Data SDK.
+Implements AsyncContentFetcher for Facebook and Instagram via the official Bright Data SDK.
 Handles trigger/poll/fetch lifecycle with configurable timeouts and error classification.
 
 Exceptions from the SDK are wrapped in domain-specific FetchError subclasses:
@@ -11,7 +11,6 @@ Exceptions from the SDK are wrapped in domain-specific FetchError subclasses:
 
 from __future__ import annotations
 
-import asyncio as asyncio_module
 import hashlib
 import os
 from datetime import UTC, datetime
@@ -29,9 +28,6 @@ from syft_ingest.core.fetcher import (
 )
 from syft_ingest.core.models import (
     ContentItem,
-    ProfileResult,
-    ReelResult,
-    SocialPostResult,
     SourceType,
 )
 
@@ -54,12 +50,11 @@ except ImportError as e:
 class BrightDataFetcher:
     """Strategy fetcher for Facebook and Instagram via Bright Data API.
 
-    Implements the ContentFetcher protocol. Takes a FetchRequest with platform
-    (facebook/instagram) and URLs, triggers a scrape job via the Bright Data SDK,
-    polls until completion or timeout, and returns results.
-
-    The fetch() method is synchronous (matching the ContentFetcher protocol),
-    but internally uses async/await via asyncio.run().
+    Implements the AsyncContentFetcher (@runtime_checkable protocol).
+    isinstance(fetcher, AsyncContentFetcher) returns True as long as the object has a `fetch_async` method.
+    Takes a FetchRequest with platform (facebook/instagram) and
+    URLs, triggers a scrape job via the Bright Data SDK, polls until completion
+    or timeout, and returns results.
 
     Attributes:
         _token: Bright Data API token (from environment or constructor).
@@ -83,26 +78,7 @@ class BrightDataFetcher:
                 platform="bright-data",
             )
 
-    def fetch(self, request: FetchRequest) -> FetchResult:
-        """Synchronous wrapper for async _fetch_async.
-
-        Runs the async method using asyncio.run(). This bridges the
-        ContentFetcher protocol (sync) with the SDK's async interface.
-
-        Args:
-            request: Fetch request with platform, URLs, and config.
-
-        Returns:
-            FetchResult with items, remote_job_id, and status.
-
-        Raises:
-            FetchAuthError: Token or authentication failure.
-            FetchTimeoutError: Poll deadline exceeded.
-            FetchError: Generic API or unexpected error.
-        """
-        return asyncio_module.run(self._fetch_async(request))
-
-    async def _fetch_async(self, request: FetchRequest) -> FetchResult:
+    async def fetch_async(self, request: FetchRequest) -> FetchResult:
         """Trigger/poll/fetch lifecycle using the Bright Data SDK.
 
         Steps:
@@ -152,61 +128,76 @@ class BrightDataFetcher:
 
         try:
             async with BrightDataClient(token=self._token) as client:
-                # Select scraper and trigger method based on platform
+                url = urls[0]
+                posts_limit = request.config.get("posts_limit")
+
                 if platform_name == "instagram":
-                    scraper = client.scrape.instagram
-                    # Phase 2: profiles only (Phase 3 can add posts vs profiles parsing)
-                    trigger_method = scraper.profiles_trigger
+                    # Instagram: use search scraper (supports num_of_posts server-side)
+                    logger.info(
+                        "Searching Instagram posts for {url}",
+                        url=url,
+                    )
+                    search_kwargs: dict[str, Any] = {
+                        "url": url,
+                        "timeout": timeout,
+                    }
+                    if posts_limit:
+                        search_kwargs["num_of_posts"] = posts_limit
+                    result = await client.search.instagram.posts(**search_kwargs)
+                    raw_data = result.data
+                    snapshot_id = result.snapshot_id
+                    logger.debug(
+                        "Instagram search completed: {snap_id}",
+                        snap_id=snapshot_id,
+                    )
+
                 elif platform_name == "facebook":
-                    scraper = client.scrape.facebook
-                    # Phase 2: posts_by_profile only (Phase 3 can add groups parsing)
-                    trigger_method = scraper.posts_by_profile_trigger
+                    # Facebook: use trigger/poll/fetch pattern
+                    trigger_method = client.scrape.facebook.posts_by_profile_trigger
+                    logger.info(
+                        "Triggering facebook scrape for {url}",
+                        url=url,
+                    )
+                    trigger_kwargs: dict[str, Any] = {"url": url}
+                    if posts_limit:
+                        trigger_kwargs["num_of_posts"] = posts_limit
+                    job = await trigger_method(**trigger_kwargs)
+                    logger.debug("Scrape job created: {job_id}", job_id=job.snapshot_id)
+
+                    logger.info(
+                        "Polling job {job_id} with timeout={timeout}s, poll_interval={interval}s",
+                        job_id=job.snapshot_id,
+                        timeout=timeout,
+                        interval=poll_interval,
+                    )
+                    await job.wait(
+                        timeout=timeout,
+                        poll_interval=poll_interval,
+                        verbose=False,
+                    )
+                    logger.debug("Job {job_id} completed", job_id=job.snapshot_id)
+
+                    raw_data = await job.fetch()
+                    snapshot_id = job.snapshot_id
+                    logger.debug(
+                        "Fetched {bytes} bytes from job", bytes=len(str(raw_data))
+                    )
+
                 else:
-                    # Should not reach here due to earlier validation, but defensive
                     raise FetchError(
                         f"Platform {platform_name} not mapped to scraper",
                         platform=platform_name,
                     )
 
-                # Trigger scrape for first URL only (Phase 4 can add concurrent multi-URL)
-                url = urls[0]
-                logger.info(
-                    "Triggering {platform} scrape for {url}",
-                    platform=platform_name,
-                    url=url,
-                )
-                job = await trigger_method(url=url)
-                logger.debug("Scrape job created: {job_id}", job_id=job.snapshot_id)
-
-                # Poll for completion with timeout
-                logger.info(
-                    "Polling job {job_id} with timeout={timeout}s, poll_interval={interval}s",
-                    job_id=job.snapshot_id,
-                    timeout=timeout,
-                    interval=poll_interval,
-                )
-                await job.wait(
-                    timeout=timeout,
-                    poll_interval=poll_interval,
-                    verbose=False,
-                )
-                logger.debug("Job {job_id} completed", job_id=job.snapshot_id)
-
-                # Fetch raw data
-                raw_data = await job.fetch()
-                logger.debug("Fetched {bytes} bytes from job", bytes=len(str(raw_data)))
-
                 # Parse response into ContentItem list
                 items = self._parse_response(raw_data, platform_name, request.config)
 
-                # Raise FetchEmptyResultError if no items parsed
                 if not items:
                     raise FetchEmptyResultError(
                         f"No content items found in {platform_name} response",
                         platform=platform_name,
                     )
 
-                # Return FetchResult with parsed items
                 fetched_at = datetime.now(UTC)
                 content_hashes = {
                     item.url or item.title: hashlib.sha256(
@@ -218,7 +209,7 @@ class BrightDataFetcher:
                 return FetchResult(
                     items=items,
                     rows_fetched=len(items),
-                    remote_job_id=job.snapshot_id,
+                    remote_job_id=snapshot_id,
                     remote_status="ready",
                     fetched_at=fetched_at,
                     content_hashes=content_hashes,
@@ -290,7 +281,7 @@ class BrightDataFetcher:
             config: Optional config dict with `posts_limit` for testing.
 
         Returns:
-            List of ContentItem subclass instances (ProfileResult, SocialPostResult, or ReelResult).
+            List of ContentItem instances with raw BrightData data in metadata.
             Empty list if response is empty or None.
         """
         if not raw_data:
@@ -326,212 +317,136 @@ class BrightDataFetcher:
         )
         return items
 
-    def _parse_instagram_response(self, raw_data: dict[str, Any]) -> list[ContentItem]:
-        """Parse Instagram scraper response into ContentItem list.
+    @staticmethod
+    def _parse_date(date_str: str | None) -> datetime | None:
+        """Parse ISO date string, handling 'Z' suffix."""
+        if not date_str:
+            return None
+        try:
+            return datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+        except (ValueError, AttributeError):
+            return None
 
-        Handles profiles, posts (image/text), and reels (video).
+    def _parse_instagram_response(
+        self, raw_data: dict[str, Any] | list[dict[str, Any]]
+    ) -> list[ContentItem]:
+        """Parse Instagram search scraper response into ContentItem list.
 
-        Args:
-            raw_data: Response dict from Instagram scraper.
+        The search scraper (client.search.instagram.posts) returns a flat list
+        of post dicts with fields: description, post_id, user_posted, likes,
+        num_comments, date_posted, content_type, photos, thumbnail, url.
 
-        Returns:
-            List of ProfileResult, SocialPostResult, or ReelResult items.
+        Also supports legacy profiles_trigger format (nested posts in profile).
         """
         items: list[ContentItem] = []
 
-        # Parse profiles if present
-        if "profiles" in raw_data:
-            for profile in raw_data.get("profiles", []):
-                try:
-                    username = profile.get("username", "Unknown")
-                    name = profile.get("name", username)
-                    bio = profile.get("bio", "")
-                    followers = profile.get("followers_count", 0)
-                    following = profile.get("following_count", 0)
-                    posts_count = profile.get("posts_count", 0)
-                    profile_picture_url = profile.get("profile_picture_url")
-                    verified = profile.get("verified", False)
+        if not isinstance(raw_data, list):
+            raw_data = [raw_data] if isinstance(raw_data, dict) else []
 
-                    item = ProfileResult(
+        for entry in raw_data:
+            if not isinstance(entry, dict):
+                continue
+
+            # Detect format: search scraper has "description"/"post_id",
+            # profiles_trigger has "account"/"posts" (nested)
+            if "posts" in entry and isinstance(entry.get("posts"), list):
+                # Legacy profiles_trigger format: profile with nested posts
+                username = entry.get("account") or entry.get("username") or "Unknown"
+                profile_meta = {k: v for k, v in entry.items() if k != "posts"}
+                items.append(
+                    ContentItem(
                         title=username,
-                        author=name,
-                        text=bio,
-                        url=f"https://instagram.com/{username}",
+                        author=username,
+                        text=entry.get("biography") or "",
+                        url=entry.get("profile_url")
+                        or f"https://instagram.com/{username}",
                         source_type=SourceType.INSTAGRAM,
                         published_at=None,
-                        followers_count=followers,
-                        following_count=following,
-                        posts_count=posts_count,
-                        profile_picture_url=profile_picture_url,
-                        verified=verified,
-                        bio=bio,
+                        metadata={
+                            "platform": "instagram",
+                            "type": "profile",
+                            **profile_meta,
+                        },
                     )
-                    items.append(item)
-                except Exception as e:
-                    logger.warning("Failed to parse Instagram profile: {}", e)
-
-        # Parse posts if present
-        if "posts" in raw_data:
-            for post in raw_data.get("posts", []):
-                try:
-                    post_id = post.get("id", "Unknown Post")
-                    username = post.get("username", "Unknown")
-                    caption = post.get("caption", "")
-                    likes = post.get("likes_count", 0)
-                    comments = post.get("comments_count", 0)
-                    shares = post.get("shares_count", 0)
-                    created_at_str = post.get("created_at")
-                    media_urls = post.get("media_urls", [])
-                    has_video = post.get("has_video", False)
-                    video_duration = post.get("video_duration_seconds")
-
-                    # Parse datetime if provided
-                    published_at = None
-                    if created_at_str:
-                        try:
-                            published_at = datetime.fromisoformat(
-                                created_at_str.replace("Z", "+00:00")
+                )
+                for post in entry["posts"]:
+                    try:
+                        items.append(
+                            ContentItem(
+                                title=str(post.get("id", "")),
+                                author=username,
+                                text=post.get("caption") or "",
+                                url=post.get("url"),
+                                source_type=SourceType.INSTAGRAM,
+                                published_at=self._parse_date(post.get("datetime")),
+                                metadata={
+                                    "platform": "instagram",
+                                    "type": "post",
+                                    **post,
+                                },
                             )
-                        except (ValueError, AttributeError):
-                            logger.debug("Could not parse date {}", created_at_str)
-
-                    if has_video or video_duration:
-                        item = ReelResult(
-                            title=post_id,
-                            author=username,
-                            text=caption,
-                            url=post.get("post_url"),
-                            source_type=SourceType.INSTAGRAM,
-                            published_at=published_at,
-                            duration_seconds=video_duration,
-                            likes_count=likes,
-                            comments_count=comments,
-                            shares_count=shares,
-                            media_urls=media_urls,
                         )
-                    else:
-                        item = SocialPostResult(
-                            title=post_id,
-                            author=username,
-                            text=caption,
-                            url=post.get("post_url"),
+                    except Exception as e:
+                        logger.warning("Failed to parse Instagram post: {}", e)
+            else:
+                # Search scraper format: flat post dict
+                try:
+                    author = entry.get("user_posted") or "Unknown"
+                    items.append(
+                        ContentItem(
+                            title=entry.get("post_id") or entry.get("shortcode") or "",
+                            author=author,
+                            text=entry.get("description") or "",
+                            url=entry.get("url") or "",
                             source_type=SourceType.INSTAGRAM,
-                            published_at=published_at,
-                            likes_count=likes,
-                            comments_count=comments,
-                            shares_count=shares,
-                            media_urls=media_urls,
+                            published_at=self._parse_date(entry.get("date_posted")),
+                            metadata={
+                                "platform": "instagram",
+                                "type": "post",
+                                **entry,
+                            },
                         )
-
-                    items.append(item)
+                    )
                 except Exception as e:
-                    logger.warning("Failed to parse Instagram post: {}", e)
+                    logger.warning("Failed to parse Instagram search post: {}", e)
 
         return items
 
-    def _parse_facebook_response(self, raw_data: dict[str, Any]) -> list[ContentItem]:
+    def _parse_facebook_response(
+        self, raw_data: dict[str, Any] | list[dict[str, Any]]
+    ) -> list[ContentItem]:
         """Parse Facebook scraper response into ContentItem list.
 
-        Handles text/image posts and video posts.
-
-        Args:
-            raw_data: Response dict from Facebook scraper.
-
-        Returns:
-            List of SocialPostResult or ReelResult items.
+        Extracts minimal fields for ContentItem, preserves the full raw
+        BrightData response in metadata for downstream consumers.
         """
         items: list[ContentItem] = []
 
-        for post in raw_data.get("posts", []):
+        if isinstance(raw_data, list):
+            posts = raw_data
+        elif isinstance(raw_data, dict):
+            posts = raw_data.get("posts", [])
+        else:
+            return items
+
+        for post in posts:
             try:
-                post_id = post.get("id", "Unknown Post")
-                message = post.get("message", "")
-                story = post.get("story", "")
-                text = message or story
-                created_time_str = post.get("created_time")
-                permalink_url = post.get("permalink_url") or post.get("link", "")
-
-                # Extract author
-                author = "Unknown"
-                if isinstance(post.get("from"), dict):
-                    author = post["from"].get("name", "Unknown")
-                elif isinstance(post.get("author"), str):
-                    author = post["author"]
-
-                # Parse datetime if provided
-                published_at = None
-                if created_time_str:
-                    try:
-                        published_at = datetime.fromisoformat(
-                            created_time_str.replace("Z", "+00:00")
-                        )
-                    except (ValueError, AttributeError):
-                        logger.debug("Could not parse date {}", created_time_str)
-
-                # Extract engagement metrics
-                likes_count = 0
-                if isinstance(post.get("likes"), dict):
-                    likes_count = len(post["likes"].get("data", []))
-                elif isinstance(post.get("like_count"), int):
-                    likes_count = post["like_count"]
-
-                comments_count = 0
-                if isinstance(post.get("comments"), dict):
-                    comments_count = len(post["comments"].get("data", []))
-                elif isinstance(post.get("comment_count"), int):
-                    comments_count = post["comment_count"]
-
-                shares_count = 0
-                if isinstance(post.get("shares"), dict):
-                    shares_count = post["shares"].get("count", 0)
-
-                # Check for video
-                is_video = (
-                    post.get("type") == "video"
-                    or "video" in post
-                    or post.get("is_video", False)
+                author = (
+                    post.get("page_name") or post.get("user_username_raw") or "Unknown"
                 )
+                published_at = self._parse_date(post.get("date_posted"))
 
-                if is_video:
-                    video_data = post.get("video", {})
-                    duration = (
-                        video_data.get("length")
-                        if isinstance(video_data, dict)
-                        else None
-                    )
-                    media_urls = (
-                        [video_data.get("source")]
-                        if isinstance(video_data, dict) and video_data.get("source")
-                        else []
-                    )
-
-                    item = ReelResult(
-                        title=post_id,
+                items.append(
+                    ContentItem(
+                        title=post.get("post_id", ""),
                         author=author,
-                        text=text,
-                        url=permalink_url,
+                        text=post.get("content") or "",
+                        url=post.get("url", ""),
                         source_type=SourceType.FACEBOOK,
                         published_at=published_at,
-                        duration_seconds=duration,
-                        likes_count=likes_count,
-                        comments_count=comments_count,
-                        shares_count=shares_count,
-                        media_urls=media_urls,
+                        metadata={"platform": "facebook", "type": "post", **post},
                     )
-                else:
-                    item = SocialPostResult(
-                        title=post_id,
-                        author=author,
-                        text=text,
-                        url=permalink_url,
-                        source_type=SourceType.FACEBOOK,
-                        published_at=published_at,
-                        likes_count=likes_count,
-                        comments_count=comments_count,
-                        shares_count=shares_count,
-                    )
-
-                items.append(item)
+                )
             except Exception as e:
                 logger.warning("Failed to parse Facebook post: {}", e)
 

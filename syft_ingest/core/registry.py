@@ -22,7 +22,7 @@ from dataclasses import dataclass
 
 from loguru import logger
 
-from syft_ingest.core.fetcher import ContentFetcher
+from syft_ingest.core.fetcher import AsyncContentFetcher, ContentFetcher, Fetcher
 from syft_ingest.core.url_router import Platform
 
 
@@ -41,26 +41,28 @@ def _normalize_extractor(extractor: str) -> str:
 
 # Module-level registry — starts empty. Implementations register themselves in
 # their own modules when imported.
-FETCHER_REGISTRY: dict[FetcherKey, ContentFetcher] = {}
+FETCHER_REGISTRY: dict[FetcherKey, Fetcher] = {}
 
 
 def register_fetcher(
     platform: Platform,
     extractor: str,
-    fetcher: ContentFetcher,
+    fetcher: Fetcher,
 ) -> None:
     """Register a fetcher implementation for a platform/extractor pair.
 
     Args:
         platform: The platform this fetcher handles.
         extractor: The acquisition backend, e.g. ``"brightdata"`` or ``"yt-dlp"``.
-        fetcher: An object satisfying the ``ContentFetcher`` Protocol.
+        fetcher: An object satisfying the ``ContentFetcher`` or ``AsyncContentFetcher`` Protocol.
 
     Raises:
-        TypeError: If *fetcher* does not satisfy the ``ContentFetcher`` Protocol.
+        TypeError: If *fetcher* does not satisfy either fetcher Protocol.
     """
-    if not isinstance(fetcher, ContentFetcher):
-        raise TypeError(f"Expected ContentFetcher, got {type(fetcher).__name__}")
+    if not isinstance(fetcher, (ContentFetcher, AsyncContentFetcher)):
+        raise TypeError(
+            f"Expected ContentFetcher or AsyncContentFetcher, got {type(fetcher).__name__}"
+        )
 
     key = FetcherKey(platform=platform, extractor=_normalize_extractor(extractor))
     existing = FETCHER_REGISTRY.get(key)
@@ -82,7 +84,7 @@ def register_fetcher(
     )
 
 
-def get_fetcher(platform: Platform, extractor: str) -> ContentFetcher:
+def get_fetcher(platform: Platform, extractor: str) -> Fetcher:
     """Return the registered fetcher for *platform* and *extractor*.
 
     Args:
@@ -90,7 +92,7 @@ def get_fetcher(platform: Platform, extractor: str) -> ContentFetcher:
         extractor: The acquisition backend to look up.
 
     Returns:
-        The ``ContentFetcher`` implementation registered for this key.
+        The ``Fetcher`` (``ContentFetcher`` or ``AsyncContentFetcher``) registered for this key.
 
     Raises:
         KeyError: If no fetcher has been registered for this platform/extractor.

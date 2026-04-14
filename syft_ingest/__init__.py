@@ -1,14 +1,18 @@
 from syft_ingest.core.fetcher import (
+    AsyncContentFetcher,
     ContentFetcher,
     FetchAuthError,
     FetchConfig,
     FetchEmptyResultError,
+    Fetcher,
     FetchError,
     FetchRequest,
     FetchResult,
     FetchTimeoutError,
+    run_fetcher_async,
+    run_fetcher_sync,
 )
-from syft_ingest.core.gather import gather
+from syft_ingest.core.gather import async_gather, gather
 from syft_ingest.core.ingest import (
     ChunkingSpec,
     Embedder,
@@ -26,6 +30,7 @@ from syft_ingest.core.registry import FetcherKey, get_fetcher, register_fetcher
 from syft_ingest.core.source_specs import SocialProfileSource, SourceSpec
 
 __all__ = [
+    "AsyncContentFetcher",
     "ChunkingSpec",
     "ContentFetcher",
     "Embedder",
@@ -34,6 +39,7 @@ __all__ = [
     "FetchConfig",
     "FetchEmptyResultError",
     "FetchError",
+    "Fetcher",
     "FetcherKey",
     "FetchRequest",
     "FetchResult",
@@ -46,9 +52,12 @@ __all__ = [
     "SocialProfileSource",
     "SourceSpec",
     "UnsupportedBackendError",
+    "async_gather",
     "gather",
     "get_fetcher",
     "ingest_corpus",
     "ingest_jsonl",
     "register_fetcher",
+    "run_fetcher_async",
+    "run_fetcher_sync",
 ]

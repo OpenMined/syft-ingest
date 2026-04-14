@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from syft_ingest.core.fetcher import (
+    AsyncContentFetcher,
     ContentFetcher,
     FetchAuthError,
     FetchEmptyResultError,
@@ -12,6 +15,8 @@ from syft_ingest.core.fetcher import (
     FetchRequest,
     FetchResult,
     FetchTimeoutError,
+    run_fetcher_async,
+    run_fetcher_sync,
 )
 from syft_ingest.core.models import ContentItem
 from syft_ingest.core.url_router import Platform
@@ -138,3 +143,113 @@ def test_fetch_request_carries_worker_context():
     assert request.handle == "katykicker"
     assert request.external_account_id == "17841436323898109"
     assert request.config == {"num_posts": 10, "post_type": "reel"}
+
+
+# ---- Async protocol helpers ----
+
+
+class _AsyncStubFetcher:
+    """Minimal class that satisfies the AsyncContentFetcher Protocol."""
+
+    async def fetch_async(self, request: FetchRequest) -> FetchResult:
+        return FetchResult(
+            items=[
+                ContentItem(
+                    title="AsyncSample",
+                    author="AsyncTester",
+                    source_type="local",
+                    url=request.urls[0],
+                    text="async hello",
+                )
+            ],
+            rows_fetched=1,
+        )
+
+
+class _NotAnAsyncFetcher:
+    """Class that does NOT satisfy AsyncContentFetcher Protocol."""
+
+    def fetch(self, request: FetchRequest) -> FetchResult:
+        return FetchResult(items=[], rows_fetched=0)
+
+
+# ---- Async protocol tests ----
+
+
+def test_async_protocol_satisfied():
+    """A class with fetch_async satisfies AsyncContentFetcher isinstance check."""
+    fetcher = _AsyncStubFetcher()
+    assert isinstance(fetcher, AsyncContentFetcher)
+
+
+def test_async_protocol_rejected():
+    """A class with only sync fetch does NOT satisfy AsyncContentFetcher."""
+    fetcher = _NotAnAsyncFetcher()
+    assert not isinstance(fetcher, AsyncContentFetcher)
+
+
+def test_sync_fetcher_does_not_satisfy_async_protocol():
+    """A sync-only fetcher does NOT satisfy AsyncContentFetcher."""
+    fetcher = _StubFetcher()
+    assert not isinstance(fetcher, AsyncContentFetcher)
+
+
+# ---- Bridge function tests ----
+
+
+def test_run_fetcher_sync_with_sync_fetcher():
+    """run_fetcher_sync dispatches sync fetcher correctly."""
+    fetcher = _StubFetcher()
+    request = FetchRequest(
+        platform=Platform.LOCAL,
+        extractor="local",
+        urls=["https://example.com/test"],
+    )
+    result = run_fetcher_sync(fetcher, request)
+    assert isinstance(result, FetchResult)
+    assert result.rows_fetched == 1
+    assert result.items[0].title == "Sample"
+
+
+def test_run_fetcher_sync_with_async_fetcher():
+    """run_fetcher_sync dispatches async fetcher correctly (bridges to sync)."""
+    fetcher = _AsyncStubFetcher()
+    request = FetchRequest(
+        platform=Platform.LOCAL,
+        extractor="local",
+        urls=["https://example.com/test"],
+    )
+    result = run_fetcher_sync(fetcher, request)
+    assert isinstance(result, FetchResult)
+    assert result.rows_fetched == 1
+    assert result.items[0].title == "AsyncSample"
+
+
+@pytest.mark.asyncio
+async def test_run_fetcher_async_with_sync_fetcher():
+    """run_fetcher_async offloads sync fetcher to thread."""
+    fetcher = _StubFetcher()
+    request = FetchRequest(
+        platform=Platform.LOCAL,
+        extractor="local",
+        urls=["https://example.com/test"],
+    )
+    result = await run_fetcher_async(fetcher, request)
+    assert isinstance(result, FetchResult)
+    assert result.rows_fetched == 1
+    assert result.items[0].title == "Sample"
+
+
+@pytest.mark.asyncio
+async def test_run_fetcher_async_with_async_fetcher():
+    """run_fetcher_async awaits async fetcher directly."""
+    fetcher = _AsyncStubFetcher()
+    request = FetchRequest(
+        platform=Platform.LOCAL,
+        extractor="local",
+        urls=["https://example.com/test"],
+    )
+    result = await run_fetcher_async(fetcher, request)
+    assert isinstance(result, FetchResult)
+    assert result.rows_fetched == 1
+    assert result.items[0].title == "AsyncSample"

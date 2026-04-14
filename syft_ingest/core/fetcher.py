@@ -15,9 +15,11 @@ all failures are wrapped in domain-specific ``FetchError`` subclasses.
 
 from __future__ import annotations
 
+import asyncio
+import concurrent.futures
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Protocol, Union, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -210,6 +212,55 @@ class ContentFetcher(Protocol):
             FetchEmptyResultError: Scrape succeeded but returned zero items.
         """
         ...
+
+
+@runtime_checkable
+class AsyncContentFetcher(Protocol):
+    """Strategy interface for async platform-specific content fetching.
+
+    Implementations with native async I/O (e.g. BrightData SDK) implement
+    this protocol. The framework bridges to sync callers automatically.
+    """
+
+    async def fetch_async(self, request: FetchRequest) -> FetchResult:
+        """Fetch content asynchronously."""
+        ...
+
+
+# Union type for registry — fetchers implement one or the other
+Fetcher = Union[ContentFetcher, AsyncContentFetcher]
+
+
+async def run_fetcher_async(fetcher: Fetcher, request: FetchRequest) -> FetchResult:
+    """Async bridge — dispatch to sync or async fetcher transparently.
+
+    AsyncContentFetcher -> await directly
+    ContentFetcher -> offload to thread pool via asyncio.to_thread()
+    """
+    if isinstance(fetcher, AsyncContentFetcher):
+        return await fetcher.fetch_async(request)
+    if isinstance(fetcher, ContentFetcher):
+        return await asyncio.to_thread(fetcher.fetch, request)
+    raise TypeError(
+        f"{type(fetcher).__name__} implements neither ContentFetcher nor AsyncContentFetcher"
+    )
+
+
+def run_fetcher_sync(fetcher: Fetcher, request: FetchRequest) -> FetchResult:
+    """Sync bridge — Jupyter-safe wrapper around run_fetcher_async.
+
+    Detects running event loop (Jupyter) and falls back to thread pool.
+    """
+    coro = run_fetcher_async(fetcher, request)
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        # No running loop — normal Python
+        return asyncio.run(coro)
+
+    # Already in an event loop (Jupyter, etc.) — run in a worker thread
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, coro).result()
 
 
 # ---------------------------------------------------------------------------

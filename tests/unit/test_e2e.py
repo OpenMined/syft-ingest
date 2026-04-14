@@ -22,7 +22,7 @@ def test_e2e_facebook_gather_and_export_jsonl(fb_export_path, output_dir):
         urls=[str(fb_export_path)],
         author="Syft Influencer Test",
     )
-    corpus.export("jsonl", output=str(output_file))
+    corpus.export(str(output_file))
 
     assert output_file.exists()
     lines = output_file.read_text().strip().splitlines()
@@ -76,7 +76,7 @@ def test_e2e_brightdata_facebook_gather_and_export_jsonl(tmp_path, output_dir):
         urls=[str(brightdata_dir)],
         author="Syft Influencer Test",
     )
-    corpus.export("jsonl", output=str(output_file))
+    corpus.export(str(output_file))
     lines = output_file.read_text().strip().splitlines()
     assert len(lines) == 1
     record = json.loads(lines[0])
@@ -99,7 +99,7 @@ def test_e2e_instagram_gather_and_export_jsonl(ig_export_path, output_dir):
         sources=["local"],
         local_dirs=[str(ig_export_path)],
     )
-    corpus.export("jsonl", output=str(output_file))
+    corpus.export(str(output_file))
 
     assert output_file.exists()
     lines = output_file.read_text().strip().splitlines()
@@ -148,7 +148,7 @@ def test_e2e_brightdata_instagram_gather_and_export_jsonl(tmp_path, output_dir):
         urls=[str(brightdata_dir)],
         author="Syft Influencer Test",
     )
-    corpus.export("jsonl", output=str(output_file))
+    corpus.export(str(output_file))
 
     lines = output_file.read_text().strip().splitlines()
     assert len(lines) == 1
@@ -207,7 +207,7 @@ def test_e2e_brightdata_instagram_export_preserves_rich_media_fields(
         urls=[str(brightdata_dir)],
         author="Syft Influencer Test",
     )
-    corpus.export("jsonl", output=str(output_file))
+    corpus.export(str(output_file))
 
     lines = output_file.read_text().strip().splitlines()
     assert len(lines) == 1
@@ -230,7 +230,7 @@ def test_e2e_combined_gather(fb_export_path, ig_export_path, output_dir):
         urls=[str(fb_export_path), str(ig_export_path)],
         author="Syft Influencer Test",
     )
-    corpus.export("jsonl", output=str(output_file))
+    corpus.export(str(output_file))
 
     lines = output_file.read_text().strip().splitlines()
     records = [json.loads(line) for line in lines]
@@ -275,7 +275,7 @@ def test_e2e_export_json(fb_export_path, output_dir):
 
     output_file = output_dir / "fb.json"
     corpus = syft_ingest.gather("local", urls=[str(fb_export_path)], author="Test")
-    corpus.export("json", output=str(output_file))
+    corpus.export(str(output_file))
 
     data = json.loads(output_file.read_text())
     assert isinstance(data, list)
@@ -288,7 +288,7 @@ def test_e2e_export_text(fb_export_path, output_dir):
 
     text_dir = output_dir / "texts"
     corpus = syft_ingest.gather("local", urls=[str(fb_export_path)], author="Test")
-    corpus.export("text", output_dir=str(text_dir))
+    corpus.export(str(text_dir))
 
     txt_files = list(text_dir.glob("*.txt"))
     assert len(txt_files) == len(corpus.all_items())
@@ -307,7 +307,7 @@ def test_e2e_stable_ids_are_deterministic_and_unique(fb_export_path, output_dir)
         corpus = syft_ingest.gather(
             "Test", sources=["local"], local_dirs=[str(fb_export_path)]
         )
-        corpus.export("jsonl", output=str(f))
+        corpus.export(str(f))
 
     ids1 = [json.loads(line)["id"] for line in file1.read_text().strip().splitlines()]
     ids2 = [json.loads(line)["id"] for line in file2.read_text().strip().splitlines()]

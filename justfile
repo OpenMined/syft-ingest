@@ -9,6 +9,10 @@ set shell := ["bash", "-cu"]
 default:
     @just --list
 
+# Run tests (pass args like: just test -k test_name)
+test *args:
+    uv run pytest -n auto {{args}}
+
 # Remove caches
 clean:
     @echo -e "{{_red}}Cleaning caches…{{_nc}}"

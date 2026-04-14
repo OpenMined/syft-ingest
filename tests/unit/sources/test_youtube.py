@@ -61,14 +61,18 @@ def test_extract_single_video_metadata(mock_ydl_class):
     Tests that _extract_video_info_and_captions correctly maps yt-dlp metadata
     fields (title, duration, view_count, etc.) to VideoResult fields.
     """
-    import asyncio
-
     # Setup mock
     mock_ydl_instance = MagicMock()
     mock_ydl_class.return_value.__enter__ = MagicMock(return_value=mock_ydl_instance)
     mock_ydl_class.return_value.__exit__ = MagicMock(return_value=None)
 
-    # Sample yt-dlp info dict (with captions)
+    # Captions returned by _fetch_and_parse_json3 (mocked below)
+    parsed_captions = [
+        {"text": "Hello world", "start": 0.0, "end": 1.5},
+        {"text": "This is a test", "start": 1.5, "end": 3.0},
+    ]
+
+    # yt-dlp info dict with json3-format subtitle tracks
     mock_ydl_instance.extract_info.return_value = {
         "title": "Test Video Title",
         "description": "Test video description",
@@ -80,18 +84,16 @@ def test_extract_single_video_metadata(mock_ydl_class):
         "id": "test_video_id",
         "upload_date": "20260413",
         "subtitles": {
-            "en": [
-                {"text": "Hello world", "start": 0.0, "end": 1.5},
-                {"text": "This is a test", "start": 1.5, "end": 3.0},
-            ]
+            "en": [{"ext": "json3", "url": "https://example.com/captions_en.json3"}]
         },
     }
 
-    # Create fetcher and call _extract_video_info_and_captions
+    # Create fetcher and patch _fetch_and_parse_json3 to return pre-parsed captions
     fetcher = YtDlpFetcher()
-    video_result = asyncio.run(
-        fetcher._extract_video_info_and_captions("https://youtube.com/watch?v=test")
-    )
+    with patch.object(fetcher, "_fetch_and_parse_json3", return_value=parsed_captions):
+        video_result = fetcher._extract_video_info_and_captions(
+            "https://youtube.com/watch?v=test"
+        )
 
     # Verify VideoResult fields
     assert isinstance(video_result, VideoResult)
@@ -119,8 +121,6 @@ def test_extract_metadata_with_missing_fields(mock_ydl_class):
     Tests that _extract_video_info_and_captions provides defaults when yt-dlp
     info dict is missing optional fields.
     """
-    import asyncio
-
     mock_ydl_instance = MagicMock()
     mock_ydl_class.return_value.__enter__ = MagicMock(return_value=mock_ydl_instance)
     mock_ydl_class.return_value.__exit__ = MagicMock(return_value=None)
@@ -132,8 +132,8 @@ def test_extract_metadata_with_missing_fields(mock_ydl_class):
     }
 
     fetcher = YtDlpFetcher()
-    video_result = asyncio.run(
-        fetcher._extract_video_info_and_captions("https://youtube.com/watch?v=min")
+    video_result = fetcher._extract_video_info_and_captions(
+        "https://youtube.com/watch?v=min"
     )
 
     assert video_result.title == "Minimal Video"
@@ -153,11 +153,15 @@ def test_extract_captions_with_timestamps(mock_ydl_class):
     Tests that _extract_video_info_and_captions captures captions from yt-dlp
     with text and timing information preserved.
     """
-    import asyncio
-
     mock_ydl_instance = MagicMock()
     mock_ydl_class.return_value.__enter__ = MagicMock(return_value=mock_ydl_instance)
     mock_ydl_class.return_value.__exit__ = MagicMock(return_value=None)
+
+    parsed_captions = [
+        {"text": "First caption", "start": 0.5, "end": 2.0},
+        {"text": "Second caption", "start": 2.0, "end": 4.5},
+        {"text": "Third caption", "start": 4.5, "end": 7.0},
+    ]
 
     mock_ydl_instance.extract_info.return_value = {
         "title": "Test Video",
@@ -165,18 +169,15 @@ def test_extract_captions_with_timestamps(mock_ydl_class):
         "uploader": "Test Author",
         "description": "Test desc",
         "subtitles": {
-            "en": [
-                {"text": "First caption", "start": 0.5, "end": 2.0},
-                {"text": "Second caption", "start": 2.0, "end": 4.5},
-                {"text": "Third caption", "start": 4.5, "end": 7.0},
-            ]
+            "en": [{"ext": "json3", "url": "https://example.com/captions_en.json3"}]
         },
     }
 
     fetcher = YtDlpFetcher()
-    video_result = asyncio.run(
-        fetcher._extract_video_info_and_captions("https://youtube.com/watch?v=test")
-    )
+    with patch.object(fetcher, "_fetch_and_parse_json3", return_value=parsed_captions):
+        video_result = fetcher._extract_video_info_and_captions(
+            "https://youtube.com/watch?v=test"
+        )
 
     # Verify captions extracted with correct format
     assert "captions" in video_result.metadata
@@ -202,11 +203,21 @@ def test_captions_stored_in_metadata(mock_ydl_class):
     Tests that _extract_video_info_and_captions stores parsed captions in the
     metadata dict under the 'captions' key.
     """
-    import asyncio
-
     mock_ydl_instance = MagicMock()
     mock_ydl_class.return_value.__enter__ = MagicMock(return_value=mock_ydl_instance)
     mock_ydl_class.return_value.__exit__ = MagicMock(return_value=None)
+
+    parsed_captions_by_lang = {
+        "https://example.com/captions_en.json3": [
+            {"text": "English caption", "start": 0.0, "end": 2.0}
+        ],
+        "https://example.com/captions_es.json3": [
+            {"text": "Spanish caption", "start": 0.0, "end": 2.0}
+        ],
+        "https://example.com/captions_fr.json3": [
+            {"text": "French caption", "start": 0.0, "end": 2.0}
+        ],
+    }
 
     mock_ydl_instance.extract_info.return_value = {
         "title": "Multilingual Video",
@@ -214,16 +225,21 @@ def test_captions_stored_in_metadata(mock_ydl_class):
         "uploader": "Test Author",
         "description": "Test desc",
         "subtitles": {
-            "en": [{"text": "English caption", "start": 0.0, "end": 2.0}],
-            "es": [{"text": "Spanish caption", "start": 0.0, "end": 2.0}],
-            "fr": [{"text": "French caption", "start": 0.0, "end": 2.0}],
+            "en": [{"ext": "json3", "url": "https://example.com/captions_en.json3"}],
+            "es": [{"ext": "json3", "url": "https://example.com/captions_es.json3"}],
+            "fr": [{"ext": "json3", "url": "https://example.com/captions_fr.json3"}],
         },
     }
 
-    fetcher = YtDlpFetcher()
-    video_result = asyncio.run(
-        fetcher._extract_video_info_and_captions("https://youtube.com/watch?v=multi")
-    )
+    fetcher = YtDlpFetcher(config={"subtitleslangs": ["en", "es", "fr"]})
+    with patch.object(
+        fetcher,
+        "_fetch_and_parse_json3",
+        side_effect=lambda url: parsed_captions_by_lang[url],
+    ):
+        video_result = fetcher._extract_video_info_and_captions(
+            "https://youtube.com/watch?v=multi"
+        )
 
     # Verify captions dict exists in metadata
     assert "captions" in video_result.metadata
@@ -248,8 +264,6 @@ def test_missing_captions_handled_gracefully(mock_ydl_class):
     Tests that _extract_video_info_and_captions handles videos without captions
     gracefully, storing empty captions dict.
     """
-    import asyncio
-
     mock_ydl_instance = MagicMock()
     mock_ydl_class.return_value.__enter__ = MagicMock(return_value=mock_ydl_instance)
     mock_ydl_class.return_value.__exit__ = MagicMock(return_value=None)
@@ -263,10 +277,8 @@ def test_missing_captions_handled_gracefully(mock_ydl_class):
     }
 
     fetcher = YtDlpFetcher()
-    video_result = asyncio.run(
-        fetcher._extract_video_info_and_captions(
-            "https://youtube.com/watch?v=nocaptions"
-        )
+    video_result = fetcher._extract_video_info_and_captions(
+        "https://youtube.com/watch?v=nocaptions"
     )
 
     # Verify captions key exists but is empty
@@ -275,37 +287,38 @@ def test_missing_captions_handled_gracefully(mock_ydl_class):
     assert video_result.title == "No Captions Video"
 
 
-def test_parse_captions_helper_method():
-    """Verify _parse_captions helper formats captions correctly.
+def test_fetch_and_parse_json3_helper_method():
+    """Verify _fetch_and_parse_json3 parses caption segments correctly.
 
-    Tests the _parse_captions method directly to ensure subtitle
-    formatting works independently.
+    Tests the _fetch_and_parse_json3 method directly to ensure json3
+    caption URL fetching and parsing works independently.
     """
+    import io
+    import json
+    from unittest.mock import patch as mock_patch
+
     fetcher = YtDlpFetcher()
 
-    # Sample yt-dlp subtitles format
-    subtitles_dict = {
-        "en": [
-            {"text": "Hello", "start": 0.0, "end": 1.0},
-            {"text": "World", "start": 1.0, "end": 2.0},
-        ],
-        "es": [
-            {"text": "Hola", "start": 0.0, "end": 1.0},
-        ],
+    # Sample YouTube json3 caption format
+    json3_data = {
+        "events": [
+            {"tStartMs": 0, "dDurationMs": 1000, "segs": [{"utf8": "Hello"}]},
+            {"tStartMs": 1000, "dDurationMs": 1000, "segs": [{"utf8": "World"}]},
+            {"tStartMs": 2000, "dDurationMs": 1000, "segs": [{"utf8": "Hola"}]},
+        ]
     }
+    mock_response = io.BytesIO(json.dumps(json3_data).encode())
 
-    result = fetcher._parse_captions(subtitles_dict)
+    with mock_patch("urllib.request.urlopen", return_value=mock_response):
+        result = fetcher._fetch_and_parse_json3("https://example.com/captions.json3")
 
     # Verify structure
-    assert "en" in result
-    assert "es" in result
-    assert len(result["en"]) == 2
-    assert len(result["es"]) == 1
+    assert len(result) == 3
 
-    # Verify content
-    assert result["en"][0] == {"text": "Hello", "start": 0.0, "end": 1.0}
-    assert result["en"][1] == {"text": "World", "start": 1.0, "end": 2.0}
-    assert result["es"][0] == {"text": "Hola", "start": 0.0, "end": 1.0}
+    # Verify content and timing
+    assert result[0] == {"text": "Hello", "start": 0.0, "end": 1.0}
+    assert result[1] == {"text": "World", "start": 1.0, "end": 2.0}
+    assert result[2] == {"text": "Hola", "start": 2.0, "end": 3.0}
 
 
 @patch("yt_dlp.YoutubeDL")
@@ -315,8 +328,6 @@ def test_download_not_called_by_default(mock_ydl_class):
     Tests that _extract_video_info_and_captions with default config does not
     attempt to download the video file (only captions).
     """
-    import asyncio
-
     mock_ydl_instance = MagicMock()
     mock_ydl_class.return_value.__enter__ = MagicMock(return_value=mock_ydl_instance)
     mock_ydl_class.return_value.__exit__ = MagicMock(return_value=None)
@@ -329,8 +340,8 @@ def test_download_not_called_by_default(mock_ydl_class):
     }
 
     fetcher = YtDlpFetcher()  # Default: download_full_video=False
-    video_result = asyncio.run(
-        fetcher._extract_video_info_and_captions("https://youtube.com/watch?v=test")
+    video_result = fetcher._extract_video_info_and_captions(
+        "https://youtube.com/watch?v=test"
     )
 
     # Verify download was not called
@@ -349,8 +360,6 @@ def test_video_not_found_raises_empty_result_error(mock_ydl_class):
     Tests that yt-dlp DownloadError containing "not found"
     is classified as FetchEmptyResultError.
     """
-    import asyncio
-
     mock_ydl_instance = MagicMock()
     mock_ydl_class.return_value.__enter__ = MagicMock(return_value=mock_ydl_instance)
     mock_ydl_class.return_value.__exit__ = MagicMock(return_value=None)
@@ -361,11 +370,7 @@ def test_video_not_found_raises_empty_result_error(mock_ydl_class):
 
     fetcher = YtDlpFetcher()
     with pytest.raises(FetchEmptyResultError) as exc_info:
-        asyncio.run(
-            fetcher._extract_video_info_and_captions(
-                "https://youtube.com/watch?v=notfound"
-            )
-        )
+        fetcher._extract_video_info_and_captions("https://youtube.com/watch?v=notfound")
 
     assert "not found" in str(exc_info.value).lower()
 
@@ -377,8 +382,6 @@ def test_age_restricted_video_raises_auth_error(mock_ydl_class):
     Tests that yt-dlp DownloadError containing "not available for users"
     is classified as FetchAuthError.
     """
-    import asyncio
-
     mock_ydl_instance = MagicMock()
     mock_ydl_class.return_value.__enter__ = MagicMock(return_value=mock_ydl_instance)
     mock_ydl_class.return_value.__exit__ = MagicMock(return_value=None)
@@ -391,10 +394,8 @@ def test_age_restricted_video_raises_auth_error(mock_ydl_class):
 
     fetcher = YtDlpFetcher()
     with pytest.raises(FetchAuthError) as exc_info:
-        asyncio.run(
-            fetcher._extract_video_info_and_captions(
-                "https://youtube.com/watch?v=agerestricted"
-            )
+        fetcher._extract_video_info_and_captions(
+            "https://youtube.com/watch?v=agerestricted"
         )
 
     assert (
@@ -409,8 +410,6 @@ def test_socket_timeout_raises_timeout_error(mock_ydl_class):
 
     Tests that socket.timeout exceptions are classified as FetchTimeoutError.
     """
-    import asyncio
-
     mock_ydl_instance = MagicMock()
     mock_ydl_class.return_value.__enter__ = MagicMock(return_value=mock_ydl_instance)
     mock_ydl_class.return_value.__exit__ = MagicMock(return_value=None)
@@ -419,9 +418,7 @@ def test_socket_timeout_raises_timeout_error(mock_ydl_class):
 
     fetcher = YtDlpFetcher()
     with pytest.raises(FetchTimeoutError):
-        asyncio.run(
-            fetcher._extract_video_info_and_captions("https://youtube.com/watch?v=slow")
-        )
+        fetcher._extract_video_info_and_captions("https://youtube.com/watch?v=slow")
 
 
 @patch("yt_dlp.YoutubeDL")
@@ -431,8 +428,6 @@ def test_download_error_timeout_raises_timeout_error(mock_ydl_class):
     Tests that yt-dlp DownloadError containing "timeout" is classified
     as FetchTimeoutError.
     """
-    import asyncio
-
     mock_ydl_instance = MagicMock()
     mock_ydl_class.return_value.__enter__ = MagicMock(return_value=mock_ydl_instance)
     mock_ydl_class.return_value.__exit__ = MagicMock(return_value=None)
@@ -443,11 +438,7 @@ def test_download_error_timeout_raises_timeout_error(mock_ydl_class):
 
     fetcher = YtDlpFetcher()
     with pytest.raises(FetchTimeoutError):
-        asyncio.run(
-            fetcher._extract_video_info_and_captions(
-                "https://youtube.com/watch?v=slow2"
-            )
-        )
+        fetcher._extract_video_info_and_captions("https://youtube.com/watch?v=slow2")
 
 
 # ---- Configuration tests ----
@@ -460,8 +451,6 @@ def test_config_timeout_passed_to_ydl(mock_ydl_class):
     Tests that FetchRequest config with socket_timeout is used
     when creating the YoutubeDL instance.
     """
-    import asyncio
-
     mock_ydl_instance = MagicMock()
     mock_ydl_class.return_value.__enter__ = MagicMock(return_value=mock_ydl_instance)
     mock_ydl_class.return_value.__exit__ = MagicMock(return_value=None)
@@ -472,9 +461,7 @@ def test_config_timeout_passed_to_ydl(mock_ydl_class):
     }
 
     fetcher = YtDlpFetcher(config={"socket_timeout": 5})
-    asyncio.run(
-        fetcher._extract_video_info_and_captions("https://youtube.com/watch?v=test")
-    )
+    fetcher._extract_video_info_and_captions("https://youtube.com/watch?v=test")
 
     # Verify YoutubeDL was called with correct timeout
     call_args = mock_ydl_class.call_args
@@ -604,10 +591,10 @@ def test_fetch_with_mixed_success_and_errors(mock_ydl_class):
 
 @patch("yt_dlp.YoutubeDL")
 def test_sync_fetch_wrapper(mock_ydl_class):
-    """Verify sync fetch() method works with asyncio.run bridge.
+    """Verify fetch() method works as pure sync.
 
-    Tests that the fetch() method (which calls asyncio.run(_fetch_async))
-    correctly executes the async code synchronously.
+    Tests that the fetch() method executes synchronously and
+    returns the expected FetchResult.
     """
     mock_ydl_instance = MagicMock()
     mock_ydl_class.return_value.__enter__ = MagicMock(return_value=mock_ydl_instance)
@@ -660,8 +647,6 @@ def test_enumerate_channel_videos(mock_ydl_class):
     Tests that _enumerate_channel uses extract_flat=True and returns
     a list of 5 video URLs from the channel.
     """
-    import asyncio
-
     mock_ydl_instance = MagicMock()
     mock_ydl_class.return_value.__enter__ = MagicMock(return_value=mock_ydl_instance)
     mock_ydl_class.return_value.__exit__ = MagicMock(return_value=None)
@@ -678,8 +663,8 @@ def test_enumerate_channel_videos(mock_ydl_class):
     }
 
     fetcher = YtDlpFetcher()
-    video_urls = asyncio.run(
-        fetcher._enumerate_channel("https://youtube.com/channel/UCXXX", limit=50)
+    video_urls = fetcher._enumerate_channel(
+        "https://youtube.com/channel/UCXXX", limit=50
     )
 
     assert len(video_urls) == 5
@@ -700,8 +685,6 @@ def test_playlistend_config_respected(mock_ydl_class):
     Tests that custom playlistend config value (10) is used
     when enumerating channel videos.
     """
-    import asyncio
-
     mock_ydl_instance = MagicMock()
     mock_ydl_class.return_value.__enter__ = MagicMock(return_value=mock_ydl_instance)
     mock_ydl_class.return_value.__exit__ = MagicMock(return_value=None)
@@ -709,9 +692,7 @@ def test_playlistend_config_respected(mock_ydl_class):
     mock_ydl_instance.extract_info.return_value = {"entries": []}
 
     fetcher = YtDlpFetcher(config={"playlistend": 10})
-    asyncio.run(
-        fetcher._enumerate_channel("https://youtube.com/channel/UCXXX", limit=10)
-    )
+    fetcher._enumerate_channel("https://youtube.com/channel/UCXXX", limit=10)
 
     # Verify playlistend=10 was passed to YoutubeDL
     call_args = mock_ydl_class.call_args
@@ -871,7 +852,6 @@ def test_download_full_video_when_enabled(mock_ydl_class):
 
     Tests that _download_video creates output_dir and downloads file.
     """
-    import asyncio
     from pathlib import Path
     from tempfile import TemporaryDirectory
 
@@ -894,8 +874,8 @@ def test_download_full_video_when_enabled(mock_ydl_class):
         dummy_file.touch()
 
         fetcher = YtDlpFetcher(config={"download_full_video": True})
-        result_path = asyncio.run(
-            fetcher._download_video("https://youtube.com/watch?v=test_vid", output_dir)
+        result_path = fetcher._download_video(
+            "https://youtube.com/watch?v=test_vid", output_dir
         )
 
         assert result_path.exists()
@@ -941,7 +921,6 @@ def test_download_creates_output_directory(mock_ydl_class):
     Tests that calling _download_video with a non-existent path
     creates the directory structure.
     """
-    import asyncio
     from pathlib import Path
     from tempfile import TemporaryDirectory
 
@@ -964,8 +943,8 @@ def test_download_creates_output_directory(mock_ydl_class):
         dummy_file.touch()
 
         fetcher = YtDlpFetcher()
-        result_path = asyncio.run(
-            fetcher._download_video("https://youtube.com/watch?v=test_vid", output_dir)
+        result_path = fetcher._download_video(
+            "https://youtube.com/watch?v=test_vid", output_dir
         )
 
         # Verify directory was created
@@ -980,7 +959,6 @@ def test_download_error_handling(mock_ydl_class):
     Tests that yt-dlp download failures are classified as FetchError,
     not FetchAuthError.
     """
-    import asyncio
     from pathlib import Path
     from tempfile import TemporaryDirectory
 
@@ -996,11 +974,7 @@ def test_download_error_handling(mock_ydl_class):
 
         fetcher = YtDlpFetcher()
         with pytest.raises(FetchError) as exc_info:
-            asyncio.run(
-                fetcher._download_video(
-                    "https://youtube.com/watch?v=test_vid", output_dir
-                )
-            )
+            fetcher._download_video("https://youtube.com/watch?v=test_vid", output_dir)
 
         # Should be FetchError, not FetchAuthError
         assert isinstance(exc_info.value, FetchError)

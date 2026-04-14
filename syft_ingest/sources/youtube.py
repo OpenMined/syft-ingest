@@ -16,7 +16,6 @@ Exceptions from yt-dlp are wrapped in domain-specific FetchError subclasses:
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import socket
 from datetime import UTC, datetime
@@ -55,8 +54,8 @@ class YtDlpFetcher:
     2. Channel/playlist enumeration (Plan 03-02)
     3. Optional full video+audio download (Plan 03-02)
 
-    The fetch() method is synchronous (matching the ContentFetcher protocol),
-    but internally uses async/await via asyncio.run().
+    All methods are synchronous — yt-dlp is a sync-native library.
+    Async callers should use asyncio.to_thread(fetcher.fetch, request).
 
     Attributes:
         _config: Configuration dict with socket_timeout, playlistend, download_full_video.
@@ -86,26 +85,6 @@ class YtDlpFetcher:
         )
 
     def fetch(self, request: FetchRequest) -> FetchResult:
-        """Synchronous wrapper for async _fetch_async.
-
-        Runs the async method using asyncio.run(). This bridges the
-        ContentFetcher protocol (sync) with the async implementation.
-
-        Args:
-            request: Fetch request with platform, URLs, and config.
-
-        Returns:
-            FetchResult with items and optional artifact_paths.
-
-        Raises:
-            FetchAuthError: Age-restricted or private video.
-            FetchEmptyResultError: Video not found.
-            FetchTimeoutError: Request timeout exceeded.
-            FetchError: Generic extraction failure.
-        """
-        return asyncio.run(self._fetch_async(request))
-
-    async def _fetch_async(self, request: FetchRequest) -> FetchResult:
         """Fetch and extract metadata for YouTube videos or channels.
 
         Detects channel/playlist URLs and enumerates videos, or processes single videos.
@@ -126,7 +105,10 @@ class YtDlpFetcher:
             FetchResult with extracted VideoResult items and artifact_paths.
 
         Raises:
-            FetchAuthError, FetchEmptyResultError, FetchError as appropriate.
+            FetchAuthError: Age-restricted or private video.
+            FetchEmptyResultError: Video not found.
+            FetchTimeoutError: Request timeout exceeded.
+            FetchError: Generic extraction failure.
         """
         items: list[VideoResult] = []
         artifact_paths: dict[str, Path] = {}
@@ -152,7 +134,7 @@ class YtDlpFetcher:
             if is_channel:
                 logger.info("Detected channel/playlist URL: {url}", url=first_url)
                 # Enumerate videos from channel
-                video_urls = await self._enumerate_channel(
+                video_urls = self._enumerate_channel(
                     first_url,
                     limit=effective_config.get("playlistend", DEFAULT_PLAYLIST_LIMIT),
                     config=effective_config,
@@ -162,7 +144,7 @@ class YtDlpFetcher:
                 # Extract metadata for each video
                 for video_url in video_urls:
                     try:
-                        video_result = await self._extract_video_info_and_captions(
+                        video_result = self._extract_video_info_and_captions(
                             video_url,
                             download=download_enabled,
                             output_dir=output_dir,
@@ -215,7 +197,7 @@ class YtDlpFetcher:
                 # Single video: extract metadata for each URL
                 for video_url in request.urls:
                     try:
-                        video_result = await self._extract_video_info_and_captions(
+                        video_result = self._extract_video_info_and_captions(
                             video_url,
                             download=download_enabled,
                             output_dir=output_dir,
@@ -260,7 +242,7 @@ class YtDlpFetcher:
             raise
         except Exception as e:
             # Log unexpected errors
-            logger.error("Unexpected error in _fetch_async: {error}", error=e)
+            logger.error("Unexpected error in fetch: {error}", error=e)
             raise FetchError(f"Unexpected error: {str(e)}", platform="youtube") from e
 
         # Raise FetchEmptyResultError if no items extracted
@@ -307,7 +289,7 @@ class YtDlpFetcher:
             pattern in url for pattern in ["/channel/", "/@", "/playlist", "/c/"]
         )
 
-    async def _enumerate_channel(
+    def _enumerate_channel(
         self,
         channel_url: str,
         limit: int = DEFAULT_PLAYLIST_LIMIT,
@@ -384,7 +366,7 @@ class YtDlpFetcher:
                 platform="youtube",
             ) from e
 
-    async def _extract_video_info_and_captions(
+    def _extract_video_info_and_captions(
         self,
         video_url: str,
         download: bool = False,
@@ -425,7 +407,7 @@ class YtDlpFetcher:
         effective_config = config or self._config
 
         try:
-            # Configure yt-dlp options for metadata extraction
+            # Configure yt-dlp options for metadata + subtitle extraction
             ydl_opts = {
                 "socket_timeout": effective_config.get(
                     "socket_timeout", DEFAULT_SOCKET_TIMEOUT
@@ -433,6 +415,13 @@ class YtDlpFetcher:
                 "quiet": True,
                 "no_warnings": True,
                 "extract_flat": False,
+                "writesubtitles": True,
+                "writeautomaticsub": True,
+                "subtitlesformat": "vtt",
+                "subtitleslangs": effective_config.get("subtitleslangs", ["en"]),
+                "extractor_args": {
+                    "youtube": {"player_client": ["android", "web"]},
+                },
             }
 
             # Extract metadata using yt-dlp
@@ -463,23 +452,59 @@ class YtDlpFetcher:
                         "Could not parse upload date {date}", date=upload_date_str
                     )
 
-            # Build metadata dict
+            # Build metadata dict with rich video fields
             metadata = {
                 "source_id": source_id,
+                "duration_seconds": duration_seconds,
+                "view_count": view_count,
                 "like_count": like_count,
+                "comment_count": info.get("comment_count"),
                 "thumbnail_url": thumbnail_url,
+                "channel_id": info.get("channel_id"),
+                "channel_url": info.get("channel_url"),
+                "uploader_id": info.get("uploader_id"),
+                "categories": info.get("categories", []),
+                "tags": info.get("tags", []),
+                "description": (description[:500] if description else ""),
+                "language": info.get("language"),
+                "availability": info.get("availability"),
+                "live_status": info.get("live_status"),
+                "age_limit": info.get("age_limit"),
             }
 
-            # Extract captions/subtitles with timestamps (primary acquisition method)
-            # NOTE: Captions are already in the first extract_info response as 'subtitles' key.
-            # We reuse them here instead of making a second yt-dlp call (which would double API requests).
+            # Extract captions/subtitles with timestamps.
+            # With download=False, yt-dlp returns caption URLs (not text).
+            # We fetch the json3 format URL and parse it into segments.
+            # Priority: user-created subtitles > automatic captions.
             captions = {}
-            if info.get("subtitles"):
-                try:
-                    captions = self._parse_captions(info["subtitles"])
-                    logger.debug("Extracted captions in {n} languages", n=len(captions))
-                except Exception as e:
-                    logger.debug("Could not parse captions: {error}", error=e)
+            caption_langs = effective_config.get("subtitleslangs", ["en"])
+            subtitle_sources = info.get("subtitles", {})
+            auto_sources = info.get("automatic_captions", {})
+
+            for lang in caption_langs:
+                # Try user-created first, then auto-generated
+                tracks = subtitle_sources.get(lang, []) or auto_sources.get(lang, [])
+                if not tracks:
+                    continue
+                json3_url = next(
+                    (t["url"] for t in tracks if t.get("ext") == "json3"), None
+                )
+                if json3_url:
+                    try:
+                        parsed = self._fetch_and_parse_json3(json3_url)
+                        if parsed:
+                            captions[lang] = parsed
+                            logger.debug(
+                                "Extracted {n} caption segments for {lang}",
+                                n=len(parsed),
+                                lang=lang,
+                            )
+                    except Exception as e:
+                        logger.debug(
+                            "Could not fetch captions for {lang}: {error}",
+                            lang=lang,
+                            error=e,
+                        )
 
             # Store captions in metadata
             metadata["captions"] = captions
@@ -505,7 +530,7 @@ class YtDlpFetcher:
                 and output_dir
             ):
                 try:
-                    file_path = await self._download_video(
+                    file_path = self._download_video(
                         video_url, output_dir, config=effective_config
                     )
                     video_result.metadata["video_file_path"] = str(file_path)
@@ -566,45 +591,42 @@ class YtDlpFetcher:
             )
             raise FetchError(f"Unexpected error: {str(e)}", platform="youtube") from e
 
-    def _parse_captions(self, subtitles_dict: dict) -> dict:
-        """Parse yt-dlp captions to structured format with timestamps.
+    def _fetch_and_parse_json3(self, json3_url: str) -> list[dict]:
+        """Fetch a json3 caption URL and parse into segments.
 
-        Converts yt-dlp's JSON3 subtitle format into a structured dictionary
-        with language codes as keys and lists of caption entries with text,
-        start time, and end time.
-
-        Args:
-            subtitles_dict: {language: [...caption entries...]}, where each
-                entry has 'text', 'start', and 'end' fields from yt-dlp.
+        YouTube's json3 format contains events with segments. Each event has
+        tStartMs (start milliseconds) and dDurationMs (duration), with text
+        in the segs array.
 
         Returns:
-            {language: [{"text": "...", "start": seconds, "end": seconds}, ...]}
-
-        Example:
-            Input: {"en": [{"text": "Hello", "start": 0.5, "end": 2.0}, ...]}
-            Output: {"en": [{"text": "Hello", "start": 0.5, "end": 2.0}, ...]}
+            List of {"text": str, "start": float, "end": float} dicts.
         """
-        parsed = {}
+        import json
+        import urllib.request
 
-        for lang, entries in subtitles_dict.items():
-            if isinstance(entries, list):
-                parsed[lang] = [
-                    {
-                        "text": e.get("text", ""),
-                        "start": e.get("start"),
-                        "end": e.get("end"),
-                    }
-                    for e in entries
-                ]
+        data = json.loads(urllib.request.urlopen(json3_url, timeout=15).read())
+        segments = []
 
-        logger.debug(
-            "Parsed captions for {n} languages: {langs}",
-            n=len(parsed),
-            langs=list(parsed.keys()),
-        )
-        return parsed
+        for event in data.get("events", []):
+            segs = event.get("segs")
+            if not segs:
+                continue
+            text = "".join(s.get("utf8", "") for s in segs).strip()
+            if not text:
+                continue
+            start_ms = event.get("tStartMs", 0)
+            dur_ms = event.get("dDurationMs", 0)
+            segments.append(
+                {
+                    "text": text,
+                    "start": start_ms / 1000.0,
+                    "end": (start_ms + dur_ms) / 1000.0,
+                }
+            )
 
-    async def _download_video(
+        return segments
+
+    def _download_video(
         self, video_url: str, output_dir: Path, config: dict | None = None
     ) -> Path:
         """Download a video with best video+audio combo.

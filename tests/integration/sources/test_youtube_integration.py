@@ -33,7 +33,12 @@ def ytdlp_fetcher():
 
 @pytest.fixture
 def sample_video_info():
-    """Sample yt-dlp info_dict for a single video with captions."""
+    """Sample yt-dlp info_dict for a single video with captions.
+
+    Uses yt-dlp's actual subtitle track format: each language maps to a list
+    of track dicts with 'url' and 'ext' keys. The json3 track URL is what
+    _fetch_and_parse_json3 processes to extract caption segments.
+    """
     return {
         "id": "dQw4w9WgXcQ",
         "title": "Test Video",
@@ -47,8 +52,8 @@ def sample_video_info():
         "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
         "subtitles": {
             "en": [
-                {"text": "Hello", "start": 0.0, "end": 1.5},
-                {"text": "This is a test", "start": 1.5, "end": 3.0},
+                {"ext": "vtt", "url": "https://captions.example.com/en.vtt"},
+                {"ext": "json3", "url": "https://captions.example.com/en.json3"},
             ]
         },
     }
@@ -101,8 +106,7 @@ def test_fetcher_implements_content_fetcher_protocol(ytdlp_fetcher):
 # ---- End-to-end fetch tests ----
 
 
-@pytest.mark.asyncio
-async def test_end_to_end_single_video_fetch(ytdlp_fetcher, sample_video_info):
+def test_end_to_end_single_video_fetch(ytdlp_fetcher, sample_video_info):
     """End-to-end single video fetch: FetchRequest → yt-dlp → FetchResult."""
     request = FetchRequest(
         platform=Platform.YOUTUBE,
@@ -117,7 +121,7 @@ async def test_end_to_end_single_video_fetch(ytdlp_fetcher, sample_video_info):
         mock_ydl.extract_info = MagicMock(return_value=sample_video_info)
         mock_ydl_class.return_value = mock_ydl
 
-        result = await ytdlp_fetcher._fetch_async(request)
+        result = ytdlp_fetcher.fetch(request)
 
         assert len(result.items) == 1
         assert isinstance(result.items[0], VideoResult)
@@ -130,8 +134,7 @@ async def test_end_to_end_single_video_fetch(ytdlp_fetcher, sample_video_info):
         assert result.fetched_at is not None
 
 
-@pytest.mark.asyncio
-async def test_end_to_end_channel_enumeration(
+def test_end_to_end_channel_enumeration(
     ytdlp_fetcher, sample_channel_info, sample_video_info
 ):
     """End-to-end channel enumeration: enumerate videos, extract metadata."""
@@ -160,7 +163,7 @@ async def test_end_to_end_channel_enumeration(
         mock_ydl.extract_info = MagicMock(side_effect=extract_info_side_effect)
         mock_ydl_class.return_value = mock_ydl
 
-        result = await ytdlp_fetcher._fetch_async(request)
+        result = ytdlp_fetcher.fetch(request)
 
         # Should have extracted metadata for all 3 enumerated videos
         assert len(result.items) == 3
@@ -168,10 +171,7 @@ async def test_end_to_end_channel_enumeration(
         assert result.rows_fetched == 3
 
 
-@pytest.mark.asyncio
-async def test_end_to_end_with_download_config(
-    ytdlp_fetcher, sample_video_info, tmp_path
-):
+def test_end_to_end_with_download_config(ytdlp_fetcher, sample_video_info, tmp_path):
     """End-to-end with download_full_video config enabled."""
     request = FetchRequest(
         platform=Platform.YOUTUBE,
@@ -198,14 +198,13 @@ async def test_end_to_end_with_download_config(
         video_file = tmp_path / "dQw4w9WgXcQ.mp4"
         video_file.touch()
 
-        result = await ytdlp_fetcher._fetch_async(request)
+        result = ytdlp_fetcher.fetch(request)
 
         assert len(result.items) == 1
         assert result.rows_fetched == 1
 
 
-@pytest.mark.asyncio
-async def test_end_to_end_video_not_found_error(ytdlp_fetcher):
+def test_end_to_end_video_not_found_error(ytdlp_fetcher):
     """Video not found error is raised as FetchEmptyResultError."""
     request = FetchRequest(
         platform=Platform.YOUTUBE,
@@ -221,11 +220,10 @@ async def test_end_to_end_video_not_found_error(ytdlp_fetcher):
         mock_ydl_class.return_value = mock_ydl
 
         with pytest.raises(FetchEmptyResultError):
-            await ytdlp_fetcher._fetch_async(request)
+            ytdlp_fetcher.fetch(request)
 
 
-@pytest.mark.asyncio
-async def test_end_to_end_age_restricted_error(ytdlp_fetcher):
+def test_end_to_end_age_restricted_error(ytdlp_fetcher):
     """Age-restricted video results in FetchEmptyResultError (no items extracted)."""
     request = FetchRequest(
         platform=Platform.YOUTUBE,
@@ -244,11 +242,10 @@ async def test_end_to_end_age_restricted_error(ytdlp_fetcher):
 
         # Age-restricted videos are skipped, resulting in no items
         with pytest.raises(FetchEmptyResultError):
-            await ytdlp_fetcher._fetch_async(request)
+            ytdlp_fetcher.fetch(request)
 
 
-@pytest.mark.asyncio
-async def test_end_to_end_with_custom_timeout(sample_video_info):
+def test_end_to_end_with_custom_timeout(sample_video_info):
     """Custom socket_timeout config is honored."""
     fetcher = YtDlpFetcher(config={"socket_timeout": 5})
     request = FetchRequest(
@@ -264,7 +261,7 @@ async def test_end_to_end_with_custom_timeout(sample_video_info):
         mock_ydl.extract_info = MagicMock(return_value=sample_video_info)
         mock_ydl_class.return_value = mock_ydl
 
-        await fetcher._fetch_async(request)
+        fetcher.fetch(request)
 
         # Verify that YoutubeDL was called with socket_timeout=5
         # Check any of the calls (they all should have socket_timeout=5)
@@ -274,10 +271,7 @@ async def test_end_to_end_with_custom_timeout(sample_video_info):
         )
 
 
-@pytest.mark.asyncio
-async def test_end_to_end_with_custom_playlistend(
-    sample_channel_info, sample_video_info
-):
+def test_end_to_end_with_custom_playlistend(sample_channel_info, sample_video_info):
     """Custom playlistend config is honored for channel enumeration."""
     fetcher = YtDlpFetcher(config={"playlistend": 10})
     request = FetchRequest(
@@ -296,7 +290,7 @@ async def test_end_to_end_with_custom_playlistend(
         mock_ydl.extract_info = MagicMock(side_effect=extract_calls)
         mock_ydl_class.return_value = mock_ydl
 
-        await fetcher._fetch_async(request)
+        fetcher.fetch(request)
 
         # First call should be with playlistend=10 (during enumeration)
         first_call_opts = mock_ydl_class.call_args_list[0][0][0]
@@ -330,8 +324,7 @@ def test_sync_fetch_wrapper(ytdlp_fetcher, sample_video_info):
 # ---- Caption extraction integration tests ----
 
 
-@pytest.mark.asyncio
-async def test_caption_extraction_integrated(ytdlp_fetcher, sample_video_info):
+def test_caption_extraction_integrated(ytdlp_fetcher, sample_video_info):
     """Test caption extraction as part of full fetch pipeline.
 
     Verifies that captions are extracted and stored in metadata
@@ -343,14 +336,26 @@ async def test_caption_extraction_integrated(ytdlp_fetcher, sample_video_info):
         urls=["https://www.youtube.com/watch?v=dQw4w9WgXcQ"],
     )
 
-    with patch("syft_ingest.sources.youtube.yt_dlp.YoutubeDL") as mock_ydl_class:
+    parsed_captions = [
+        {"text": "Hello", "start": 0.0, "end": 1.5},
+        {"text": "This is a test", "start": 1.5, "end": 3.0},
+    ]
+
+    with (
+        patch("syft_ingest.sources.youtube.yt_dlp.YoutubeDL") as mock_ydl_class,
+        patch.object(
+            ytdlp_fetcher,
+            "_fetch_and_parse_json3",
+            return_value=parsed_captions,
+        ),
+    ):
         mock_ydl = MagicMock()
         mock_ydl.__enter__ = MagicMock(return_value=mock_ydl)
         mock_ydl.__exit__ = MagicMock(return_value=False)
         mock_ydl.extract_info = MagicMock(return_value=sample_video_info)
         mock_ydl_class.return_value = mock_ydl
 
-        result = await ytdlp_fetcher._fetch_async(request)
+        result = ytdlp_fetcher.fetch(request)
 
         # Verify captions in result
         assert len(result.items) == 1
@@ -364,8 +369,7 @@ async def test_caption_extraction_integrated(ytdlp_fetcher, sample_video_info):
         assert captions[0]["end"] == 1.5
 
 
-@pytest.mark.asyncio
-async def test_captions_in_channel_enumeration(
+def test_captions_in_channel_enumeration(
     ytdlp_fetcher, sample_channel_info, sample_video_info
 ):
     """Test that captions are extracted for all videos in channel enumeration."""
@@ -375,7 +379,18 @@ async def test_captions_in_channel_enumeration(
         urls=["https://www.youtube.com/channel/UCtest123"],
     )
 
-    with patch("syft_ingest.sources.youtube.yt_dlp.YoutubeDL") as mock_ydl_class:
+    parsed_captions = [
+        {"text": "Hello", "start": 0.0, "end": 1.5},
+    ]
+
+    with (
+        patch("syft_ingest.sources.youtube.yt_dlp.YoutubeDL") as mock_ydl_class,
+        patch.object(
+            ytdlp_fetcher,
+            "_fetch_and_parse_json3",
+            return_value=parsed_captions,
+        ),
+    ):
         mock_ydl = MagicMock()
         mock_ydl.__enter__ = MagicMock(return_value=mock_ydl)
         mock_ydl.__exit__ = MagicMock(return_value=False)
@@ -386,7 +401,7 @@ async def test_captions_in_channel_enumeration(
             if "channel" in url or "extract_flat" in str(mock_ydl.__dict__):
                 return sample_channel_info
             else:
-                # Return video metadata with captions
+                # Return video metadata with captions (using yt-dlp json3 format)
                 video_data = sample_video_info.copy()
                 video_data["id"] = url.split("=")[-1]
                 return video_data
@@ -394,18 +409,17 @@ async def test_captions_in_channel_enumeration(
         mock_ydl.extract_info = MagicMock(side_effect=extract_info_side_effect)
         mock_ydl_class.return_value = mock_ydl
 
-        result = await ytdlp_fetcher._fetch_async(request)
+        result = ytdlp_fetcher.fetch(request)
 
         # Verify all videos have captions
         assert len(result.items) == 3
         for video in result.items:
             assert "captions" in video.metadata
-            # sample_video_info has English captions
+            # sample_video_info has English captions (json3 track format)
             assert "en" in video.metadata["captions"]
 
 
-@pytest.mark.asyncio
-async def test_missing_captions_in_video_metadata(ytdlp_fetcher):
+def test_missing_captions_in_video_metadata(ytdlp_fetcher):
     """Test that videos without captions still extract successfully.
 
     Verifies that missing captions don't cause extraction failures.
@@ -437,7 +451,7 @@ async def test_missing_captions_in_video_metadata(ytdlp_fetcher):
         mock_ydl.extract_info = MagicMock(return_value=video_info_no_captions)
         mock_ydl_class.return_value = mock_ydl
 
-        result = await ytdlp_fetcher._fetch_async(request)
+        result = ytdlp_fetcher.fetch(request)
 
         # Should still extract successfully
         assert len(result.items) == 1

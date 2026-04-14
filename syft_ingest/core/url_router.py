@@ -17,7 +17,7 @@ from urllib.parse import urlparse
 from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
-    from syft_ingest.core.fetcher import ContentFetcher
+    from syft_ingest.core.fetcher import AsyncContentFetcher, ContentFetcher
 
 
 class Platform(str, Enum):
@@ -221,7 +221,9 @@ def supported_platforms() -> list[dict[str, str]]:
     ]
 
 
-def get_fetcher_for_url(url: str, default_method: str | None = None) -> ContentFetcher:
+def get_fetcher_for_url(
+    url: str, default_method: str | None = None
+) -> "ContentFetcher | AsyncContentFetcher":
     """Resolve URL to Platform, then dispatch to fetcher registry.
 
     This bridges the URL router (resolves URL → Platform) with the fetcher
@@ -246,7 +248,7 @@ def get_fetcher_for_url(url: str, default_method: str | None = None) -> ContentF
         ValueError: If no default fetcher method is configured for the platform
         KeyError: If no fetcher is registered for the resolved platform/method
     """
-    from syft_ingest.core.fetcher import ContentFetcher
+    from syft_ingest.core.fetcher import AsyncContentFetcher, ContentFetcher
     from syft_ingest.core.registry import get_fetcher
 
     # Resolve URL to platform
@@ -272,11 +274,11 @@ def get_fetcher_for_url(url: str, default_method: str | None = None) -> ContentF
     # Get the fetcher from the registry
     fetcher = get_fetcher(platform, default_method)
 
-    # Verify it satisfies the ContentFetcher protocol
-    if not isinstance(fetcher, ContentFetcher):
+    # Verify it satisfies either ContentFetcher or AsyncContentFetcher protocol
+    if not isinstance(fetcher, (ContentFetcher, AsyncContentFetcher)):
         raise TypeError(
             f"Registered fetcher for {platform.value}/{default_method} "
-            f"does not satisfy ContentFetcher protocol"
+            f"does not satisfy ContentFetcher or AsyncContentFetcher protocol"
         )
 
     return fetcher

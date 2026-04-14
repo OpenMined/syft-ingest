@@ -10,7 +10,7 @@ Tests verify that gather(platform, urls, author, **config) correctly:
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -20,9 +20,7 @@ from syft_ingest.core.fetcher import (
 )
 from syft_ingest.core.gather import gather
 from syft_ingest.core.models import (
-    ProfileResult,
-    ReelResult,
-    SocialPostResult,
+    ContentItem,
     SourceType,
     VideoResult,
 )
@@ -46,7 +44,9 @@ def test_gather_youtube_url_source():
     # Mock get_fetcher to return a mock fetcher
     with patch("syft_ingest.core.registry.get_fetcher") as mock_get_fetcher:
         mock_fetcher = MagicMock()
-        mock_fetcher.fetch.return_value = FetchResult(items=[video_result])
+        mock_fetcher.fetch_async = AsyncMock(
+            return_value=FetchResult(items=[video_result])
+        )
         mock_get_fetcher.return_value = mock_fetcher
 
         # Call gather with YouTube platform and URL
@@ -60,41 +60,35 @@ def test_gather_youtube_url_source():
         # Verify get_fetcher was called with correct platform and extractor
         mock_get_fetcher.assert_called_once_with(Platform.YOUTUBE, "yt-dlp")
 
-        # Verify fetch was called
-        mock_fetcher.fetch.assert_called_once()
+        # Verify fetch_async was called via the bridge
+        mock_fetcher.fetch_async.assert_called_once()
 
 
 def test_gather_instagram_url_source():
     """gather("instagram", [urls]) returns Corpus with Instagram items."""
     # Create mock Instagram items
-    profile_result = ProfileResult(
+    profile_result = ContentItem(
         title="Test User",
         author="Test User",
         url="https://www.instagram.com/testuser/",
         text="Test user profile",
         source_type=SourceType.INSTAGRAM,
-        metadata={
-            "platform": "instagram",
-            "extractor": "brightdata",
-        },
+        metadata={"platform": "instagram", "type": "profile"},
     )
 
-    post_result = SocialPostResult(
+    post_result = ContentItem(
         title="Test Post",
         url="https://www.instagram.com/p/ABC123/",
         author="Test User",
         text="Test post content",
         source_type=SourceType.INSTAGRAM,
-        metadata={
-            "platform": "instagram",
-            "extractor": "brightdata",
-        },
+        metadata={"platform": "instagram", "type": "post"},
     )
 
     with patch("syft_ingest.core.registry.get_fetcher") as mock_get_fetcher:
         mock_fetcher = MagicMock()
-        mock_fetcher.fetch.return_value = FetchResult(
-            items=[profile_result, post_result]
+        mock_fetcher.fetch_async = AsyncMock(
+            return_value=FetchResult(items=[profile_result, post_result])
         )
         mock_get_fetcher.return_value = mock_fetcher
 
@@ -103,8 +97,8 @@ def test_gather_instagram_url_source():
 
         # Verify corpus contains both items
         assert len(corpus.all_items()) == 2
-        assert isinstance(corpus.all_items()[0], ProfileResult)
-        assert isinstance(corpus.all_items()[1], SocialPostResult)
+        assert isinstance(corpus.all_items()[0], ContentItem)
+        assert isinstance(corpus.all_items()[1], ContentItem)
 
         # Verify get_fetcher was called with correct platform and extractor
         mock_get_fetcher.assert_called_once_with(Platform.INSTAGRAM, "brightdata")
@@ -113,33 +107,29 @@ def test_gather_instagram_url_source():
 def test_gather_facebook_url_source():
     """gather("facebook", [urls]) returns Corpus with Facebook items."""
     # Create mock Facebook items
-    reel_result = ReelResult(
+    reel_result = ContentItem(
         title="Test Reel",
         url="https://www.facebook.com/watch/?v=test123",
         author="Test Page",
         text="Test reel content",
         source_type=SourceType.FACEBOOK,
-        metadata={
-            "platform": "facebook",
-            "extractor": "brightdata",
-        },
+        metadata={"platform": "facebook", "type": "post"},
     )
 
-    post_result = SocialPostResult(
+    post_result = ContentItem(
         title="Test Post",
         url="https://www.facebook.com/testpage/posts/123",
         author="Test Page",
         text="Test post content",
         source_type=SourceType.FACEBOOK,
-        metadata={
-            "platform": "facebook",
-            "extractor": "brightdata",
-        },
+        metadata={"platform": "facebook", "type": "post"},
     )
 
     with patch("syft_ingest.core.registry.get_fetcher") as mock_get_fetcher:
         mock_fetcher = MagicMock()
-        mock_fetcher.fetch.return_value = FetchResult(items=[reel_result, post_result])
+        mock_fetcher.fetch_async = AsyncMock(
+            return_value=FetchResult(items=[reel_result, post_result])
+        )
         mock_get_fetcher.return_value = mock_fetcher
 
         # Call gather with Facebook platform and URL
@@ -147,8 +137,8 @@ def test_gather_facebook_url_source():
 
         # Verify corpus contains both items
         assert len(corpus.all_items()) == 2
-        assert isinstance(corpus.all_items()[0], ReelResult)
-        assert isinstance(corpus.all_items()[1], SocialPostResult)
+        assert isinstance(corpus.all_items()[0], ContentItem)
+        assert isinstance(corpus.all_items()[1], ContentItem)
 
         # Verify get_fetcher was called with correct platform and extractor
         mock_get_fetcher.assert_called_once_with(Platform.FACEBOOK, "brightdata")
@@ -185,7 +175,7 @@ def test_gather_handles_fetch_error():
     """gather() raises FetchError when fetcher fails."""
     with patch("syft_ingest.core.registry.get_fetcher") as mock_get_fetcher:
         mock_fetcher = MagicMock()
-        mock_fetcher.fetch.side_effect = FetchError("Network error")
+        mock_fetcher.fetch_async = AsyncMock(side_effect=FetchError("Network error"))
         mock_get_fetcher.return_value = mock_fetcher
 
         # Verify error is raised

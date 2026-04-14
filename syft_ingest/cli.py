@@ -51,10 +51,7 @@ def _cmd_local_export(args: argparse.Namespace) -> int:
         author=args.author,
     )
     output_path = Path(args.output).expanduser()
-    if args.format == "text":
-        corpus.export("text", output_dir=str(output_path))
-    else:
-        corpus.export(args.format, output=str(output_path))
+    corpus.export(str(output_path))
     return 0
 
 

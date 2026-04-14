@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Any
 
 import pytest
@@ -217,26 +216,7 @@ def test_chunk_text_empty_returns_empty():
 
 
 # ---------------------------------------------------------------------------
-# 7. test_gather_unsupported_source_spec_kind
-# ---------------------------------------------------------------------------
-
-
-def test_gather_unsupported_source_spec_kind():
-    @dataclass
-    class _UnknownSpec:
-        kind: str = "unknown_kind"
-        raw_dirs: list[str] = None
-
-        def __post_init__(self):
-            if self.raw_dirs is None:
-                self.raw_dirs = ["/tmp"]
-
-    # Skipped: source_specs API removed in favor of simplified gather(platform, urls) API
-    pytest.skip("gather() source_specs API has been removed")
-
-
-# ---------------------------------------------------------------------------
-# 8. test_merge_embedding_contract_handles_edge_cases
+# 7. test_merge_embedding_contract_handles_edge_cases
 # ---------------------------------------------------------------------------
 
 
