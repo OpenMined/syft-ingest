@@ -150,7 +150,6 @@ class YtDlpFetcher:
                             download=download_enabled,
                             output_dir=output_dir,
                             config=effective_config,
-                            start_date=request.start_date,
                         )
                         if video_result:
                             items.append(video_result)
@@ -204,7 +203,6 @@ class YtDlpFetcher:
                             download=download_enabled,
                             output_dir=output_dir,
                             config=effective_config,
-                            start_date=request.start_date,
                         )
                         if video_result:
                             items.append(video_result)
@@ -354,11 +352,6 @@ class YtDlpFetcher:
                 "playlistend": limit,
             }
 
-            ytdlp_date = self._to_ytdlp_date(start_date)
-            if ytdlp_date:
-                ydl_opts["dateafter"] = ytdlp_date
-                logger.debug("Channel enumeration: dateafter={date}", date=ytdlp_date)
-
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(channel_url, download=False)
 
@@ -369,17 +362,29 @@ class YtDlpFetcher:
                     platform="youtube",
                 )
 
+            # Filter by start_date in our code (yt-dlp's dateafter
+            # doesn't work with extract_flat/download=False)
+            cutoff = self._to_ytdlp_date(start_date)  # "YYYYMMDD" or None
+
             video_urls = []
             for entry in info["entries"]:
-                if entry and "url" in entry:
+                if not entry:
+                    continue
+
+                # Skip videos older than start_date
+                if cutoff and entry.get("upload_date"):
+                    if entry["upload_date"] < cutoff:
+                        continue
+
+                if "url" in entry:
                     video_urls.append(entry["url"])
-                elif entry and "id" in entry:
-                    # Fallback: construct URL from ID
+                elif "id" in entry:
                     video_urls.append(f"https://www.youtube.com/watch?v={entry['id']}")
 
             logger.info(
-                "Enumerated {n} videos from channel",
+                "Enumerated {n} videos from channel{filter_msg}",
                 n=len(video_urls),
+                filter_msg=f" (after {start_date})" if start_date else "",
             )
             return video_urls
 
@@ -401,7 +406,6 @@ class YtDlpFetcher:
         download: bool = False,
         output_dir: Path | None = None,
         config: dict | None = None,
-        start_date: str | None = None,
     ) -> VideoResult | None:
         """Extract video metadata and captions from a single YouTube video.
 
@@ -421,8 +425,6 @@ class YtDlpFetcher:
             download: If True and config['download_full_video']=True, attempt download.
             output_dir: Directory to save downloaded video (required if download=True).
             config: Optional config dict (uses self._config if not provided).
-            start_date: ISO 8601 date string ("YYYY-MM-DD"). When provided, yt-dlp
-                will skip videos published before this date via the dateafter option.
 
         Returns:
             VideoResult with video metadata + extracted captions (with timestamps), or None if not found.
@@ -456,14 +458,8 @@ class YtDlpFetcher:
                 },
             }
 
-            ytdlp_date = self._to_ytdlp_date(start_date)
-            if ytdlp_date:
-                ydl_opts["dateafter"] = ytdlp_date
-                logger.debug(
-                    "Video extraction: dateafter={date} for {url}",
-                    date=ytdlp_date,
-                    url=video_url,
-                )
+            # NOTE: dateafter doesn't work with download=False.
+            # Date filtering is done in _enumerate_channel() instead.
 
             # Extract metadata using yt-dlp
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:

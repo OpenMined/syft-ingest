@@ -998,93 +998,115 @@ def test_to_ytdlp_date_conversion():
 
 
 @patch("yt_dlp.YoutubeDL")
-def test_enumerate_channel_with_dateafter(mock_ydl_class):
-    """Verify dateafter is added to yt-dlp opts when start_date is provided.
-
-    Tests that _enumerate_channel passes dateafter=YYYYMMDD to YoutubeDL
-    when start_date is set on the request.
-    """
+def test_enumerate_channel_with_start_date_filters(mock_ydl_class):
+    """Verify start_date filters out older videos after extraction."""
     mock_ydl_instance = MagicMock()
     mock_ydl_class.return_value.__enter__ = MagicMock(return_value=mock_ydl_instance)
     mock_ydl_class.return_value.__exit__ = MagicMock(return_value=None)
 
     mock_ydl_instance.extract_info.return_value = {
         "entries": [
-            {"url": "https://youtube.com/watch?v=vid1", "id": "vid1"},
+            {
+                "url": "https://youtube.com/watch?v=new",
+                "id": "new",
+                "upload_date": "20260408",
+            },
+            {
+                "url": "https://youtube.com/watch?v=old",
+                "id": "old",
+                "upload_date": "20180621",
+            },
         ]
     }
 
     fetcher = YtDlpFetcher()
-    fetcher._enumerate_channel(
+    urls = fetcher._enumerate_channel(
         "https://youtube.com/@creator",
         limit=50,
         start_date="2026-04-01",
     )
 
-    call_args = mock_ydl_class.call_args
-    ydl_opts = call_args[0][0]
-    assert ydl_opts.get("dateafter") == "20260401"
+    assert len(urls) == 1
+    assert "new" in urls[0]
 
 
 @patch("yt_dlp.YoutubeDL")
-def test_enumerate_channel_without_dateafter(mock_ydl_class):
-    """Verify dateafter is absent from yt-dlp opts when start_date is None.
-
-    Tests that _enumerate_channel does NOT add dateafter when start_date is
-    not provided.
-    """
+def test_enumerate_channel_without_start_date_returns_all(mock_ydl_class):
+    """Verify all videos returned when start_date is None."""
     mock_ydl_instance = MagicMock()
     mock_ydl_class.return_value.__enter__ = MagicMock(return_value=mock_ydl_instance)
     mock_ydl_class.return_value.__exit__ = MagicMock(return_value=None)
 
     mock_ydl_instance.extract_info.return_value = {
         "entries": [
-            {"url": "https://youtube.com/watch?v=vid1", "id": "vid1"},
+            {
+                "url": "https://youtube.com/watch?v=new",
+                "id": "new",
+                "upload_date": "20260408",
+            },
+            {
+                "url": "https://youtube.com/watch?v=old",
+                "id": "old",
+                "upload_date": "20180621",
+            },
         ]
     }
 
     fetcher = YtDlpFetcher()
-    fetcher._enumerate_channel(
+    urls = fetcher._enumerate_channel(
         "https://youtube.com/@creator",
         limit=50,
         start_date=None,
     )
 
-    call_args = mock_ydl_class.call_args
-    ydl_opts = call_args[0][0]
-    assert "dateafter" not in ydl_opts
+    assert len(urls) == 2
 
 
 @patch("yt_dlp.YoutubeDL")
-def test_fetch_with_start_date_passes_dateafter(mock_ydl_class):
-    """Verify fetch() propagates request.start_date as dateafter to yt-dlp.
+def test_fetch_channel_with_start_date_filters_old_videos(mock_ydl_class):
+    """Verify fetch() with start_date on a channel URL filters old videos.
 
-    Integration test through the full fetch() path: FetchRequest.start_date
-    must appear as dateafter=YYYYMMDD in the YoutubeDL options dict passed
-    during _extract_video_info_and_captions.
+    Date filtering happens post-extraction in _enumerate_channel by comparing
+    each entry's upload_date against the start_date cutoff.
     """
     mock_ydl_instance = MagicMock()
     mock_ydl_class.return_value.__enter__ = MagicMock(return_value=mock_ydl_instance)
     mock_ydl_class.return_value.__exit__ = MagicMock(return_value=None)
 
-    mock_ydl_instance.extract_info.return_value = {
-        "title": "Recent Video",
-        "id": "recent_vid",
-        "uploader": "Creator",
-        "description": "A recent video",
-    }
+    # First call: channel enumeration (extract_flat=True)
+    # Second call: video metadata extraction
+    mock_ydl_instance.extract_info.side_effect = [
+        {
+            "entries": [
+                {
+                    "url": "https://youtube.com/watch?v=new",
+                    "id": "new",
+                    "upload_date": "20260408",
+                },
+                {
+                    "url": "https://youtube.com/watch?v=old",
+                    "id": "old",
+                    "upload_date": "20180621",
+                },
+            ]
+        },
+        {
+            "title": "New Video",
+            "id": "new",
+            "uploader": "Creator",
+            "description": "A new video",
+        },
+    ]
 
     fetcher = YtDlpFetcher()
     request = FetchRequest(
         platform=Platform.YOUTUBE,
-        urls=["https://youtube.com/watch?v=recent_vid"],
+        urls=["https://youtube.com/@creator"],
         start_date="2026-04-01",
     )
 
-    fetcher.fetch(request)
+    result = fetcher.fetch(request)
 
-    # The last call to YoutubeDL (for _extract_video_info_and_captions) must
-    # include dateafter. mock_ydl_class.call_args gives the most recent call.
-    call_args = mock_ydl_class.call_args
-    ydl_opts = call_args[0][0]
-    assert ydl_opts.get("dateafter") == "20260401"
+    # Only the new video should be fetched
+    assert len(result.items) == 1
+    assert result.items[0].title == "New Video"
