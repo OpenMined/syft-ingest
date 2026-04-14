@@ -134,11 +134,9 @@ class YtDlpFetcher:
             # Parse start_date cutoff for post-extraction filtering
             start_date_cutoff = None
             if request.start_date:
-                from datetime import datetime as dt
-
-                start_date_cutoff = dt.strptime(request.start_date, "%Y-%m-%d").replace(
-                    tzinfo=UTC
-                )
+                start_date_cutoff = datetime.strptime(
+                    request.start_date, "%Y-%m-%d"
+                ).replace(tzinfo=UTC)
 
             if is_channel:
                 logger.info("Detected channel/playlist URL: {url}", url=first_url)
@@ -229,6 +227,19 @@ class YtDlpFetcher:
                             config=effective_config,
                         )
                         if video_result:
+                            # Filter by start_date (same as channel path)
+                            if (
+                                start_date_cutoff
+                                and video_result.published_at
+                                and video_result.published_at < start_date_cutoff
+                            ):
+                                logger.info(
+                                    "Skipping {title} (published {date}, before {cutoff})",
+                                    title=video_result.title,
+                                    date=video_result.published_at,
+                                    cutoff=request.start_date,
+                                )
+                                continue
                             items.append(video_result)
 
                             # Track downloaded file if applicable
@@ -294,29 +305,6 @@ class YtDlpFetcher:
             fetched_at=datetime.now(UTC),
             content_hashes=content_hashes,
         )
-
-    @staticmethod
-    def _to_ytdlp_date(date_str: str | None) -> str | None:
-        """Convert ISO 8601 date string to yt-dlp dateafter format.
-
-        yt-dlp's dateafter option expects YYYYMMDD (no dashes).
-
-        Args:
-            date_str: Date in "YYYY-MM-DD" format, or None.
-
-        Returns:
-            Date in "YYYYMMDD" format, or None if input is None.
-
-        Raises:
-            ValueError: If date_str is not valid YYYY-MM-DD format.
-        """
-        if date_str is None:
-            return None
-        from datetime import datetime as dt
-
-        # Validate strict YYYY-MM-DD format
-        dt.strptime(date_str, "%Y-%m-%d")
-        return date_str.replace("-", "")
 
     def _is_channel_url(self, url: str) -> bool:
         """Detect if URL is a channel/playlist (not a single video).

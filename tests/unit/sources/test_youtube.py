@@ -984,19 +984,6 @@ def test_download_error_handling(mock_ydl_class):
 # ---- Delta fetching / start_date / dateafter tests ----
 
 
-def test_to_ytdlp_date_conversion():
-    """Verify _to_ytdlp_date converts ISO dates to yt-dlp YYYYMMDD format.
-
-    Tests both the normal conversion case and the None passthrough.
-    """
-    fetcher = YtDlpFetcher()
-
-    assert fetcher._to_ytdlp_date("2026-04-01") == "20260401"
-    assert fetcher._to_ytdlp_date("2024-01-15") == "20240115"
-    assert fetcher._to_ytdlp_date("2020-12-31") == "20201231"
-    assert fetcher._to_ytdlp_date(None) is None
-
-
 @patch("yt_dlp.YoutubeDL")
 def test_fetch_channel_with_start_date_filters_old_videos(mock_ydl_class):
     """Verify fetch() with start_date on a channel URL filters old videos.
@@ -1048,3 +1035,46 @@ def test_fetch_channel_with_start_date_filters_old_videos(mock_ydl_class):
     # Only the new video should pass the date filter
     assert len(result.items) == 1
     assert result.items[0].title == "New Video"
+
+
+@patch("yt_dlp.YoutubeDL")
+def test_fetch_invalid_start_date_raises_fetch_error(mock_ydl_class):
+    """Invalid start_date format raises FetchError, not raw ValueError."""
+    fetcher = YtDlpFetcher()
+    request = FetchRequest(
+        platform=Platform.YOUTUBE,
+        urls=["https://youtube.com/watch?v=test"],
+        start_date="bad-date",
+    )
+
+    with pytest.raises(FetchError, match="Unexpected error"):
+        fetcher.fetch(request)
+
+
+@patch("yt_dlp.YoutubeDL")
+def test_fetch_video_without_published_at_passes_filter(mock_ydl_class):
+    """Video with no published_at should pass through the date filter."""
+    mock_ydl_instance = MagicMock()
+    mock_ydl_class.return_value.__enter__ = MagicMock(return_value=mock_ydl_instance)
+    mock_ydl_class.return_value.__exit__ = MagicMock(return_value=None)
+
+    mock_ydl_instance.extract_info.return_value = {
+        "title": "No Date Video",
+        "id": "nodate",
+        "uploader": "Creator",
+        "description": "A video with no upload date",
+        # No upload_date field
+    }
+
+    fetcher = YtDlpFetcher()
+    request = FetchRequest(
+        platform=Platform.YOUTUBE,
+        urls=["https://youtube.com/watch?v=nodate"],
+        start_date="2026-04-01",
+    )
+
+    result = fetcher.fetch(request)
+
+    # Should still be included (no date = can't filter, so keep it)
+    assert len(result.items) == 1
+    assert result.items[0].title == "No Date Video"

@@ -36,7 +36,7 @@ def _build_request(
     # Extract top-level FetchRequest fields from config kwargs so they are not
     # silently buried in the opaque config dict.
     start_date = config.pop("start_date", None)
-    end_date = config.pop("end_date", None)
+    end_date = config.pop("end_date", None)  # Scaffolding — not yet used by any fetcher
 
     request_config = dict(config)
     if author:
