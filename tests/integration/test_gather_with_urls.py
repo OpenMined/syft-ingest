@@ -10,7 +10,7 @@ Tests verify that gather(platform, urls, author, **config) correctly:
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -46,7 +46,9 @@ def test_gather_youtube_url_source():
     # Mock get_fetcher to return a mock fetcher
     with patch("syft_ingest.core.registry.get_fetcher") as mock_get_fetcher:
         mock_fetcher = MagicMock()
-        mock_fetcher.fetch.return_value = FetchResult(items=[video_result])
+        mock_fetcher.fetch_async = AsyncMock(
+            return_value=FetchResult(items=[video_result])
+        )
         mock_get_fetcher.return_value = mock_fetcher
 
         # Call gather with YouTube platform and URL
@@ -60,8 +62,8 @@ def test_gather_youtube_url_source():
         # Verify get_fetcher was called with correct platform and extractor
         mock_get_fetcher.assert_called_once_with(Platform.YOUTUBE, "yt-dlp")
 
-        # Verify fetch was called
-        mock_fetcher.fetch.assert_called_once()
+        # Verify fetch_async was called via the bridge
+        mock_fetcher.fetch_async.assert_called_once()
 
 
 def test_gather_instagram_url_source():
@@ -93,8 +95,8 @@ def test_gather_instagram_url_source():
 
     with patch("syft_ingest.core.registry.get_fetcher") as mock_get_fetcher:
         mock_fetcher = MagicMock()
-        mock_fetcher.fetch.return_value = FetchResult(
-            items=[profile_result, post_result]
+        mock_fetcher.fetch_async = AsyncMock(
+            return_value=FetchResult(items=[profile_result, post_result])
         )
         mock_get_fetcher.return_value = mock_fetcher
 
@@ -139,7 +141,9 @@ def test_gather_facebook_url_source():
 
     with patch("syft_ingest.core.registry.get_fetcher") as mock_get_fetcher:
         mock_fetcher = MagicMock()
-        mock_fetcher.fetch.return_value = FetchResult(items=[reel_result, post_result])
+        mock_fetcher.fetch_async = AsyncMock(
+            return_value=FetchResult(items=[reel_result, post_result])
+        )
         mock_get_fetcher.return_value = mock_fetcher
 
         # Call gather with Facebook platform and URL
@@ -185,7 +189,7 @@ def test_gather_handles_fetch_error():
     """gather() raises FetchError when fetcher fails."""
     with patch("syft_ingest.core.registry.get_fetcher") as mock_get_fetcher:
         mock_fetcher = MagicMock()
-        mock_fetcher.fetch.side_effect = FetchError("Network error")
+        mock_fetcher.fetch_async = AsyncMock(side_effect=FetchError("Network error"))
         mock_get_fetcher.return_value = mock_fetcher
 
         # Verify error is raised
