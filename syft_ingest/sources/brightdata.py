@@ -1,6 +1,6 @@
 """Bright Data API client for programmatic content acquisition.
 
-Implements ContentFetcher for Facebook and Instagram via the official Bright Data SDK.
+Implements AsyncContentFetcher for Facebook and Instagram via the official Bright Data SDK.
 Handles trigger/poll/fetch lifecycle with configurable timeouts and error classification.
 
 Exceptions from the SDK are wrapped in domain-specific FetchError subclasses:
@@ -53,12 +53,10 @@ except ImportError as e:
 class BrightDataFetcher:
     """Strategy fetcher for Facebook and Instagram via Bright Data API.
 
-    Implements the ContentFetcher protocol. Takes a FetchRequest with platform
-    (facebook/instagram) and URLs, triggers a scrape job via the Bright Data SDK,
-    polls until completion or timeout, and returns results.
-
-    The fetch() method is synchronous (matching the ContentFetcher protocol),
-    but internally uses async/await via asyncio.run().
+    Implements the AsyncContentFetcher protocol. The fetch_async() method is
+    natively async. Takes a FetchRequest with platform (facebook/instagram) and
+    URLs, triggers a scrape job via the Bright Data SDK, polls until completion
+    or timeout, and returns results.
 
     Attributes:
         _token: Bright Data API token (from environment or constructor).
@@ -82,35 +80,7 @@ class BrightDataFetcher:
                 platform="bright-data",
             )
 
-    def fetch(self, request: FetchRequest) -> FetchResult:
-        """Synchronous wrapper for async _fetch_async.
-
-        Runs the async method using asyncio.run(). This bridges the
-        ContentFetcher protocol (sync) with the SDK's async interface.
-
-        Args:
-            request: Fetch request with platform, URLs, and config.
-
-        Returns:
-            FetchResult with items, remote_job_id, and status.
-
-        Raises:
-            FetchAuthError: Token or authentication failure.
-            FetchTimeoutError: Poll deadline exceeded.
-            FetchError: Generic API or unexpected error.
-        """
-        import asyncio
-        import concurrent.futures
-
-        coro = self._fetch_async(request)
-        try:
-            asyncio.get_running_loop()
-        except RuntimeError:
-            return asyncio.run(coro)
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            return pool.submit(asyncio.run, coro).result()
-
-    async def _fetch_async(self, request: FetchRequest) -> FetchResult:
+    async def fetch_async(self, request: FetchRequest) -> FetchResult:
         """Trigger/poll/fetch lifecycle using the Bright Data SDK.
 
         Steps:

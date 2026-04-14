@@ -12,6 +12,7 @@ from syft_ingest.core.fetcher import (
     FetchError,
     FetchRequest,
     FetchTimeoutError,
+    run_fetcher_sync,
 )
 from syft_ingest.core.models import (
     ProfileResult,
@@ -51,8 +52,8 @@ def mock_job():
 
 
 @pytest.mark.asyncio
-async def test_fetch_async_with_instagram_profile_success(brightdata_fetcher):
-    """Successfully fetch Instagram profile via _fetch_async."""
+async def testfetch_async_with_instagram_profile_success(brightdata_fetcher):
+    """Successfully fetch Instagram profile via fetch_async."""
     request = FetchRequest(
         platform=Platform.INSTAGRAM,
         extractor="brightdata",
@@ -85,7 +86,7 @@ async def test_fetch_async_with_instagram_profile_success(brightdata_fetcher):
     with patch("syft_ingest.sources.brightdata.BrightDataClient") as mock_client_class:
         mock_client_class.return_value.__aenter__.return_value = mock_client
 
-        result = await brightdata_fetcher._fetch_async(request)
+        result = await brightdata_fetcher.fetch_async(request)
 
         assert result.remote_job_id == "job-ig-001"
         assert result.remote_status == "ready"
@@ -105,8 +106,8 @@ async def test_fetch_async_with_instagram_profile_success(brightdata_fetcher):
 
 
 @pytest.mark.asyncio
-async def test_fetch_async_with_facebook_profile_success(brightdata_fetcher):
-    """Successfully fetch Facebook profile via _fetch_async."""
+async def testfetch_async_with_facebook_profile_success(brightdata_fetcher):
+    """Successfully fetch Facebook profile via fetch_async."""
     request = FetchRequest(
         platform=Platform.FACEBOOK,
         extractor="brightdata",
@@ -140,7 +141,7 @@ async def test_fetch_async_with_facebook_profile_success(brightdata_fetcher):
     with patch("syft_ingest.sources.brightdata.BrightDataClient") as mock_client_class:
         mock_client_class.return_value.__aenter__.return_value = mock_client
 
-        result = await brightdata_fetcher._fetch_async(request)
+        result = await brightdata_fetcher.fetch_async(request)
 
         assert result.remote_job_id == "job-fb-002"
         assert result.remote_status == "ready"
@@ -159,7 +160,7 @@ async def test_fetch_async_with_facebook_profile_success(brightdata_fetcher):
 
 
 @pytest.mark.asyncio
-async def test_fetch_async_uses_default_timeout_and_poll_interval(brightdata_fetcher):
+async def testfetch_async_uses_default_timeout_and_poll_interval(brightdata_fetcher):
     """When config lacks timeout/poll_interval, use defaults (180s/5s)."""
     request = FetchRequest(
         platform=Platform.INSTAGRAM,
@@ -193,7 +194,7 @@ async def test_fetch_async_uses_default_timeout_and_poll_interval(brightdata_fet
     with patch("syft_ingest.sources.brightdata.BrightDataClient") as mock_client_class:
         mock_client_class.return_value.__aenter__.return_value = mock_client
 
-        await brightdata_fetcher._fetch_async(request)
+        await brightdata_fetcher.fetch_async(request)
 
         # Verify defaults were used
         call_kwargs = mock_job.wait.call_args[1]
@@ -228,7 +229,7 @@ async def test_poll_timeout_error_raises_fetch_timeout_error(brightdata_fetcher)
         mock_client_class.return_value.__aenter__.return_value = mock_client
 
         with pytest.raises(FetchTimeoutError) as exc_info:
-            await brightdata_fetcher._fetch_async(request)
+            await brightdata_fetcher.fetch_async(request)
 
         assert "timed out" in str(exc_info.value).lower()
         assert exc_info.value.platform == "instagram"
@@ -260,7 +261,7 @@ async def test_data_not_ready_error_raises_fetch_timeout_error(brightdata_fetche
         mock_client_class.return_value.__aenter__.return_value = mock_client
 
         with pytest.raises(FetchTimeoutError) as exc_info:
-            await brightdata_fetcher._fetch_async(request)
+            await brightdata_fetcher.fetch_async(request)
 
         assert "pending" in str(exc_info.value).lower()
         assert exc_info.value.platform == "facebook"
@@ -284,7 +285,7 @@ async def test_validation_error_raises_fetch_auth_error(brightdata_fetcher):
         mock_client_class.side_effect = ValidationError("Invalid token")
 
         with pytest.raises(FetchAuthError) as exc_info:
-            await brightdata_fetcher._fetch_async(request)
+            await brightdata_fetcher.fetch_async(request)
 
         assert "token" in str(exc_info.value).lower()
         assert exc_info.value.platform == "instagram"
@@ -305,7 +306,7 @@ async def test_authentication_error_raises_fetch_auth_error(brightdata_fetcher):
         mock_client_class.side_effect = AuthenticationError("Unauthorized")
 
         with pytest.raises(FetchAuthError) as exc_info:
-            await brightdata_fetcher._fetch_async(request)
+            await brightdata_fetcher.fetch_async(request)
 
         assert "authentication" in str(exc_info.value).lower()
         assert exc_info.value.platform == "facebook"
@@ -342,7 +343,7 @@ async def test_api_error_401_raises_fetch_auth_error(brightdata_fetcher):
         mock_client_class.return_value.__aenter__.return_value = mock_client
 
         with pytest.raises(FetchAuthError) as exc_info:
-            await brightdata_fetcher._fetch_async(request)
+            await brightdata_fetcher.fetch_async(request)
 
         assert "auth" in str(exc_info.value).lower()
 
@@ -375,7 +376,7 @@ async def test_api_error_403_raises_fetch_auth_error(brightdata_fetcher):
         mock_client_class.return_value.__aenter__.return_value = mock_client
 
         with pytest.raises(FetchAuthError) as exc_info:
-            await brightdata_fetcher._fetch_async(request)
+            await brightdata_fetcher.fetch_async(request)
 
         assert "auth" in str(exc_info.value).lower()
 
@@ -408,7 +409,7 @@ async def test_api_error_500_raises_fetch_error(brightdata_fetcher):
         mock_client_class.return_value.__aenter__.return_value = mock_client
 
         with pytest.raises(FetchError) as exc_info:
-            await brightdata_fetcher._fetch_async(request)
+            await brightdata_fetcher.fetch_async(request)
 
         # Should be FetchError, not FetchAuthError
         assert not isinstance(exc_info.value, FetchAuthError)
@@ -428,7 +429,7 @@ async def test_unsupported_platform_raises_fetch_error(brightdata_fetcher):
     )
 
     with pytest.raises(FetchError) as exc_info:
-        await brightdata_fetcher._fetch_async(request)
+        await brightdata_fetcher.fetch_async(request)
 
     assert "unsupported" in str(exc_info.value).lower()
     assert exc_info.value.platform == "youtube"
@@ -444,22 +445,21 @@ async def test_tiktok_not_supported_in_phase_2(brightdata_fetcher):
     )
 
     with pytest.raises(FetchError) as exc_info:
-        await brightdata_fetcher._fetch_async(request)
+        await brightdata_fetcher.fetch_async(request)
 
     assert "unsupported" in str(exc_info.value).lower()
 
 
-# ---- Sync fetch() wrapper tests ----
+# ---- Sync bridge tests (via run_fetcher_sync) ----
 
 
-def test_fetch_sync_wrapper_calls_async(brightdata_fetcher):
-    """fetch() sync wrapper calls _fetch_async via asyncio.run()."""
+def test_run_fetcher_sync_with_brightdata(brightdata_fetcher):
+    """run_fetcher_sync bridges async BrightDataFetcher to sync callers."""
     request = FetchRequest(
         platform=Platform.INSTAGRAM,
         extractor="brightdata",
         urls=["https://instagram.com/test"],
     )
-
     mock_job = AsyncMock()
     mock_job.snapshot_id = "job-sync-test"
     mock_job.wait = AsyncMock()
@@ -476,7 +476,6 @@ def test_fetch_sync_wrapper_calls_async(brightdata_fetcher):
             ]
         }
     )
-
     mock_client = AsyncMock()
     mock_scraper = AsyncMock()
     mock_scraper.profiles_trigger = AsyncMock(return_value=mock_job)
@@ -484,27 +483,22 @@ def test_fetch_sync_wrapper_calls_async(brightdata_fetcher):
 
     with patch("syft_ingest.sources.brightdata.BrightDataClient") as mock_client_class:
         mock_client_class.return_value.__aenter__.return_value = mock_client
-
-        result = brightdata_fetcher.fetch(request)
-
+        result = run_fetcher_sync(brightdata_fetcher, request)
         assert result.remote_job_id == "job-sync-test"
-        assert result.remote_status == "ready"
         assert len(result.items) >= 1
 
 
-def test_fetch_sync_wrapper_propagates_fetch_timeout_error(brightdata_fetcher):
-    """fetch() wrapper propagates FetchTimeoutError from async code."""
+def test_run_fetcher_sync_propagates_fetch_timeout_error(brightdata_fetcher):
+    """run_fetcher_sync propagates FetchTimeoutError from async code."""
     request = FetchRequest(
         platform=Platform.FACEBOOK,
         extractor="brightdata",
         urls=["https://facebook.com/test"],
         config={"timeout": 2},
     )
-
     mock_job = AsyncMock()
     mock_job.snapshot_id = "job-timeout-sync"
     mock_job.wait = AsyncMock(side_effect=TimeoutError("Timed out"))
-
     mock_client = AsyncMock()
     mock_scraper = AsyncMock()
     mock_scraper.posts_by_profile_trigger = AsyncMock(return_value=mock_job)
@@ -512,13 +506,12 @@ def test_fetch_sync_wrapper_propagates_fetch_timeout_error(brightdata_fetcher):
 
     with patch("syft_ingest.sources.brightdata.BrightDataClient") as mock_client_class:
         mock_client_class.return_value.__aenter__.return_value = mock_client
-
         with pytest.raises(FetchTimeoutError):
-            brightdata_fetcher.fetch(request)
+            run_fetcher_sync(brightdata_fetcher, request)
 
 
-def test_fetch_sync_wrapper_propagates_fetch_auth_error(brightdata_fetcher):
-    """fetch() wrapper propagates FetchAuthError from async code."""
+def test_run_fetcher_sync_propagates_fetch_auth_error(brightdata_fetcher):
+    """run_fetcher_sync propagates FetchAuthError from async code."""
     from brightdata.exceptions import AuthenticationError
 
     request = FetchRequest(
@@ -526,12 +519,10 @@ def test_fetch_sync_wrapper_propagates_fetch_auth_error(brightdata_fetcher):
         extractor="brightdata",
         urls=["https://instagram.com/test"],
     )
-
     with patch("syft_ingest.sources.brightdata.BrightDataClient") as mock_client_class:
         mock_client_class.side_effect = AuthenticationError("Unauthorized")
-
         with pytest.raises(FetchAuthError):
-            brightdata_fetcher.fetch(request)
+            run_fetcher_sync(brightdata_fetcher, request)
 
 
 # ---- Parsing tests ----
@@ -705,7 +696,7 @@ async def test_empty_result_error_in_fetch(brightdata_fetcher):
         mock_client_class.return_value.__aenter__.return_value = mock_client
 
         with pytest.raises(FetchEmptyResultError):
-            await brightdata_fetcher._fetch_async(request)
+            await brightdata_fetcher.fetch_async(request)
 
 
 def test_parse_error_handling_skips_bad_items(brightdata_fetcher):
@@ -779,7 +770,7 @@ async def test_end_to_end_instagram_fetch_with_parsing(brightdata_fetcher):
     with patch("syft_ingest.sources.brightdata.BrightDataClient") as mock_client_class:
         mock_client_class.return_value.__aenter__.return_value = mock_client
 
-        result = await brightdata_fetcher._fetch_async(request)
+        result = await brightdata_fetcher.fetch_async(request)
 
         assert result.remote_job_id == "job-ig-e2e"
         assert result.remote_status == "ready"
