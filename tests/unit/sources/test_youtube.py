@@ -979,3 +979,112 @@ def test_download_error_handling(mock_ydl_class):
         # Should be FetchError, not FetchAuthError
         assert isinstance(exc_info.value, FetchError)
         assert not isinstance(exc_info.value, FetchAuthError)
+
+
+# ---- Delta fetching / start_date / dateafter tests ----
+
+
+def test_to_ytdlp_date_conversion():
+    """Verify _to_ytdlp_date converts ISO dates to yt-dlp YYYYMMDD format.
+
+    Tests both the normal conversion case and the None passthrough.
+    """
+    fetcher = YtDlpFetcher()
+
+    assert fetcher._to_ytdlp_date("2026-04-01") == "20260401"
+    assert fetcher._to_ytdlp_date("2024-01-15") == "20240115"
+    assert fetcher._to_ytdlp_date("2020-12-31") == "20201231"
+    assert fetcher._to_ytdlp_date(None) is None
+
+
+@patch("yt_dlp.YoutubeDL")
+def test_enumerate_channel_with_dateafter(mock_ydl_class):
+    """Verify dateafter is added to yt-dlp opts when start_date is provided.
+
+    Tests that _enumerate_channel passes dateafter=YYYYMMDD to YoutubeDL
+    when start_date is set on the request.
+    """
+    mock_ydl_instance = MagicMock()
+    mock_ydl_class.return_value.__enter__ = MagicMock(return_value=mock_ydl_instance)
+    mock_ydl_class.return_value.__exit__ = MagicMock(return_value=None)
+
+    mock_ydl_instance.extract_info.return_value = {
+        "entries": [
+            {"url": "https://youtube.com/watch?v=vid1", "id": "vid1"},
+        ]
+    }
+
+    fetcher = YtDlpFetcher()
+    fetcher._enumerate_channel(
+        "https://youtube.com/@creator",
+        limit=50,
+        start_date="2026-04-01",
+    )
+
+    call_args = mock_ydl_class.call_args
+    ydl_opts = call_args[0][0]
+    assert ydl_opts.get("dateafter") == "20260401"
+
+
+@patch("yt_dlp.YoutubeDL")
+def test_enumerate_channel_without_dateafter(mock_ydl_class):
+    """Verify dateafter is absent from yt-dlp opts when start_date is None.
+
+    Tests that _enumerate_channel does NOT add dateafter when start_date is
+    not provided.
+    """
+    mock_ydl_instance = MagicMock()
+    mock_ydl_class.return_value.__enter__ = MagicMock(return_value=mock_ydl_instance)
+    mock_ydl_class.return_value.__exit__ = MagicMock(return_value=None)
+
+    mock_ydl_instance.extract_info.return_value = {
+        "entries": [
+            {"url": "https://youtube.com/watch?v=vid1", "id": "vid1"},
+        ]
+    }
+
+    fetcher = YtDlpFetcher()
+    fetcher._enumerate_channel(
+        "https://youtube.com/@creator",
+        limit=50,
+        start_date=None,
+    )
+
+    call_args = mock_ydl_class.call_args
+    ydl_opts = call_args[0][0]
+    assert "dateafter" not in ydl_opts
+
+
+@patch("yt_dlp.YoutubeDL")
+def test_fetch_with_start_date_passes_dateafter(mock_ydl_class):
+    """Verify fetch() propagates request.start_date as dateafter to yt-dlp.
+
+    Integration test through the full fetch() path: FetchRequest.start_date
+    must appear as dateafter=YYYYMMDD in the YoutubeDL options dict passed
+    during _extract_video_info_and_captions.
+    """
+    mock_ydl_instance = MagicMock()
+    mock_ydl_class.return_value.__enter__ = MagicMock(return_value=mock_ydl_instance)
+    mock_ydl_class.return_value.__exit__ = MagicMock(return_value=None)
+
+    mock_ydl_instance.extract_info.return_value = {
+        "title": "Recent Video",
+        "id": "recent_vid",
+        "uploader": "Creator",
+        "description": "A recent video",
+    }
+
+    fetcher = YtDlpFetcher()
+    request = FetchRequest(
+        platform=Platform.YOUTUBE,
+        urls=["https://youtube.com/watch?v=recent_vid"],
+        start_date="2026-04-01",
+    )
+
+    fetcher.fetch(request)
+
+    # The last call to YoutubeDL (for _extract_video_info_and_captions) must
+    # include dateafter. mock_ydl_class.call_args gives the most recent call.
+    call_args = mock_ydl_class.call_args
+    ydl_opts = call_args[0][0]
+    assert ydl_opts.get("dateafter") == "20260401"

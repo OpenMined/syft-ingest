@@ -138,6 +138,7 @@ class YtDlpFetcher:
                     first_url,
                     limit=effective_config.get("playlistend", DEFAULT_PLAYLIST_LIMIT),
                     config=effective_config,
+                    start_date=request.start_date,
                 )
                 logger.info("Enumerated {n} videos from channel", n=len(video_urls))
 
@@ -149,6 +150,7 @@ class YtDlpFetcher:
                             download=download_enabled,
                             output_dir=output_dir,
                             config=effective_config,
+                            start_date=request.start_date,
                         )
                         if video_result:
                             items.append(video_result)
@@ -202,6 +204,7 @@ class YtDlpFetcher:
                             download=download_enabled,
                             output_dir=output_dir,
                             config=effective_config,
+                            start_date=request.start_date,
                         )
                         if video_result:
                             items.append(video_result)
@@ -270,6 +273,23 @@ class YtDlpFetcher:
             content_hashes=content_hashes,
         )
 
+    @staticmethod
+    def _to_ytdlp_date(date_str: str | None) -> str | None:
+        """Convert ISO 8601 date string to yt-dlp dateafter format.
+
+        yt-dlp's dateafter option expects YYYYMMDD (no dashes).
+
+        Args:
+            date_str: Date in "YYYY-MM-DD" format, or None.
+
+        Returns:
+            Date in "YYYYMMDD" format, or None if input is None.
+        """
+        if date_str is None:
+            return None
+        # Strip dashes: "2026-04-01" -> "20260401"
+        return date_str.replace("-", "")
+
     def _is_channel_url(self, url: str) -> bool:
         """Detect if URL is a channel/playlist (not a single video).
 
@@ -294,6 +314,7 @@ class YtDlpFetcher:
         channel_url: str,
         limit: int = DEFAULT_PLAYLIST_LIMIT,
         config: dict | None = None,
+        start_date: str | None = None,
     ) -> list[str]:
         """Enumerate video URLs from a channel/playlist using extract_flat.
 
@@ -304,6 +325,8 @@ class YtDlpFetcher:
             channel_url: YouTube channel or playlist URL
             limit: Max videos to enumerate (default DEFAULT_PLAYLIST_LIMIT)
             config: Optional config dict (uses self._config if not provided)
+            start_date: ISO 8601 date string ("YYYY-MM-DD"). When provided,
+                only videos published on or after this date are enumerated.
 
         Returns:
             List of full video URLs
@@ -312,8 +335,9 @@ class YtDlpFetcher:
             FetchError: If enumeration fails
         """
         logger.debug(
-            "Enumerating channel with limit={limit}",
+            "Enumerating channel with limit={limit}, start_date={start_date}",
             limit=limit,
+            start_date=start_date,
         )
 
         # Use provided config or fall back to instance config
@@ -329,6 +353,11 @@ class YtDlpFetcher:
                 "no_warnings": True,
                 "playlistend": limit,
             }
+
+            ytdlp_date = self._to_ytdlp_date(start_date)
+            if ytdlp_date:
+                ydl_opts["dateafter"] = ytdlp_date
+                logger.debug("Channel enumeration: dateafter={date}", date=ytdlp_date)
 
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(channel_url, download=False)
@@ -372,6 +401,7 @@ class YtDlpFetcher:
         download: bool = False,
         output_dir: Path | None = None,
         config: dict | None = None,
+        start_date: str | None = None,
     ) -> VideoResult | None:
         """Extract video metadata and captions from a single YouTube video.
 
@@ -391,6 +421,8 @@ class YtDlpFetcher:
             download: If True and config['download_full_video']=True, attempt download.
             output_dir: Directory to save downloaded video (required if download=True).
             config: Optional config dict (uses self._config if not provided).
+            start_date: ISO 8601 date string ("YYYY-MM-DD"). When provided, yt-dlp
+                will skip videos published before this date via the dateafter option.
 
         Returns:
             VideoResult with video metadata + extracted captions (with timestamps), or None if not found.
@@ -423,6 +455,15 @@ class YtDlpFetcher:
                     "youtube": {"player_client": ["android", "web"]},
                 },
             }
+
+            ytdlp_date = self._to_ytdlp_date(start_date)
+            if ytdlp_date:
+                ydl_opts["dateafter"] = ytdlp_date
+                logger.debug(
+                    "Video extraction: dateafter={date} for {url}",
+                    date=ytdlp_date,
+                    url=video_url,
+                )
 
             # Extract metadata using yt-dlp
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
