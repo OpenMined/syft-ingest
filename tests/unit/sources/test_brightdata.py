@@ -15,9 +15,7 @@ from syft_ingest.core.fetcher import (
     run_fetcher_sync,
 )
 from syft_ingest.core.models import (
-    ProfileResult,
-    ReelResult,
-    SocialPostResult,
+    ContentItem,
     SourceType,
 )
 from syft_ingest.core.url_router import Platform
@@ -53,7 +51,7 @@ def mock_job():
 
 @pytest.mark.asyncio
 async def testfetch_async_with_instagram_profile_success(brightdata_fetcher):
-    """Successfully fetch Instagram profile via fetch_async."""
+    """Successfully fetch Instagram posts via fetch_async (search scraper path)."""
     request = FetchRequest(
         platform=Platform.INSTAGRAM,
         extractor="brightdata",
@@ -61,48 +59,44 @@ async def testfetch_async_with_instagram_profile_success(brightdata_fetcher):
         config={"timeout": 30},
     )
 
-    mock_job = AsyncMock()
-    mock_job.snapshot_id = "job-ig-001"
-    mock_job.wait = AsyncMock()
-    mock_job.fetch = AsyncMock(
-        return_value={
-            "profiles": [
-                {
-                    "username": "testuser",
-                    "name": "Test User",
-                    "bio": "Test bio",
-                    "followers_count": 100,
-                    "posts_count": 10,
-                }
-            ]
+    from unittest.mock import MagicMock
+
+    mock_result = MagicMock()
+    mock_result.snapshot_id = "snap-ig-001"
+    mock_result.data = [
+        {
+            "post_id": "123",
+            "description": "Test caption",
+            "user_posted": "testuser",
+            "likes": 100,
+            "num_comments": 5,
+            "date_posted": "2026-01-01T12:00:00Z",
+            "content_type": "Image",
+            "photos": ["https://example.com/photo.jpg"],
+            "url": "https://instagram.com/p/abc123",
         }
-    )
+    ]
 
     mock_client = AsyncMock()
-    mock_scraper = AsyncMock()
-    mock_scraper.profiles_trigger = AsyncMock(return_value=mock_job)
-    mock_client.scrape.instagram = mock_scraper
+    mock_search_ig = AsyncMock()
+    mock_search_ig.posts = AsyncMock(return_value=mock_result)
+    mock_client.search.instagram = mock_search_ig
 
     with patch("syft_ingest.sources.brightdata.BrightDataClient") as mock_client_class:
         mock_client_class.return_value.__aenter__.return_value = mock_client
 
         result = await brightdata_fetcher.fetch_async(request)
 
-        assert result.remote_job_id == "job-ig-001"
+        assert result.remote_job_id == "snap-ig-001"
         assert result.remote_status == "ready"
         assert result.rows_fetched == 1
         assert len(result.items) == 1
-        assert isinstance(result.items[0], ProfileResult)
 
-        # Verify trigger was called with correct URL
-        mock_scraper.profiles_trigger.assert_called_once_with(
-            url="https://instagram.com/testuser"
+        # Verify search was called with correct URL and timeout
+        mock_search_ig.posts.assert_called_once_with(
+            url="https://instagram.com/testuser",
+            timeout=30,
         )
-
-        # Verify job.wait was called with correct timeout
-        mock_job.wait.assert_called_once()
-        call_kwargs = mock_job.wait.call_args[1]
-        assert call_kwargs["timeout"] == 30
 
 
 @pytest.mark.asyncio
@@ -161,45 +155,45 @@ async def testfetch_async_with_facebook_profile_success(brightdata_fetcher):
 
 @pytest.mark.asyncio
 async def testfetch_async_uses_default_timeout_and_poll_interval(brightdata_fetcher):
-    """When config lacks timeout/poll_interval, use defaults (180s/5s)."""
+    """When config lacks timeout, Instagram search uses default timeout (180s)."""
     request = FetchRequest(
         platform=Platform.INSTAGRAM,
         extractor="brightdata",
         urls=["https://instagram.com/test"],
-        config={},  # Empty config
+        config={},  # Empty config — should use default timeout=180
     )
 
-    mock_job = AsyncMock()
-    mock_job.snapshot_id = "job-default"
-    mock_job.wait = AsyncMock()
-    mock_job.fetch = AsyncMock(
-        return_value={
-            "profiles": [
-                {
-                    "username": "testuser",
-                    "name": "Test",
-                    "bio": "Bio",
-                    "followers_count": 0,
-                    "posts_count": 0,
-                }
-            ]
+    from unittest.mock import MagicMock
+
+    mock_result = MagicMock()
+    mock_result.snapshot_id = "snap-default"
+    mock_result.data = [
+        {
+            "post_id": "1",
+            "description": "Post",
+            "user_posted": "testuser",
+            "likes": 0,
+            "num_comments": 0,
+            "date_posted": "2026-01-01T12:00:00Z",
+            "content_type": "Image",
+            "photos": [],
+            "url": "https://instagram.com/p/1",
         }
-    )
+    ]
 
     mock_client = AsyncMock()
-    mock_scraper = AsyncMock()
-    mock_scraper.profiles_trigger = AsyncMock(return_value=mock_job)
-    mock_client.scrape.instagram = mock_scraper
+    mock_search_ig = AsyncMock()
+    mock_search_ig.posts = AsyncMock(return_value=mock_result)
+    mock_client.search.instagram = mock_search_ig
 
     with patch("syft_ingest.sources.brightdata.BrightDataClient") as mock_client_class:
         mock_client_class.return_value.__aenter__.return_value = mock_client
 
         await brightdata_fetcher.fetch_async(request)
 
-        # Verify defaults were used
-        call_kwargs = mock_job.wait.call_args[1]
+        # Verify default timeout was passed to search
+        call_kwargs = mock_search_ig.posts.call_args[1]
         assert call_kwargs["timeout"] == 180
-        assert call_kwargs["poll_interval"] == 5
 
 
 # ---- Timeout error tests ----
@@ -207,7 +201,7 @@ async def testfetch_async_uses_default_timeout_and_poll_interval(brightdata_fetc
 
 @pytest.mark.asyncio
 async def test_poll_timeout_error_raises_fetch_timeout_error(brightdata_fetcher):
-    """When job.wait() raises TimeoutError, raise FetchTimeoutError."""
+    """When Instagram search raises TimeoutError, raise FetchTimeoutError."""
     request = FetchRequest(
         platform=Platform.INSTAGRAM,
         extractor="brightdata",
@@ -215,15 +209,11 @@ async def test_poll_timeout_error_raises_fetch_timeout_error(brightdata_fetcher)
         config={"timeout": 5},
     )
 
-    mock_job = AsyncMock()
-    mock_job.snapshot_id = "job-timeout"
-    # Simulate timeout during polling
-    mock_job.wait = AsyncMock(side_effect=TimeoutError("Job timed out"))
-
     mock_client = AsyncMock()
-    mock_scraper = AsyncMock()
-    mock_scraper.profiles_trigger = AsyncMock(return_value=mock_job)
-    mock_client.scrape.instagram = mock_scraper
+    mock_search_ig = AsyncMock()
+    # Simulate timeout during search
+    mock_search_ig.posts = AsyncMock(side_effect=TimeoutError("Search timed out"))
+    mock_client.search.instagram = mock_search_ig
 
     with patch("syft_ingest.sources.brightdata.BrightDataClient") as mock_client_class:
         mock_client_class.return_value.__aenter__.return_value = mock_client
@@ -317,7 +307,7 @@ async def test_authentication_error_raises_fetch_auth_error(brightdata_fetcher):
 
 @pytest.mark.asyncio
 async def test_api_error_401_raises_fetch_auth_error(brightdata_fetcher):
-    """When API returns 401, classify as auth error."""
+    """When Instagram search API returns 401, classify as auth error."""
     from brightdata.exceptions import APIError
 
     request = FetchRequest(
@@ -326,18 +316,14 @@ async def test_api_error_401_raises_fetch_auth_error(brightdata_fetcher):
         urls=["https://instagram.com/test"],
     )
 
-    mock_job = AsyncMock()
-    mock_job.snapshot_id = "job-401"
-    mock_job.wait = AsyncMock()
-    # fetch() raises APIError with 401
+    # search.instagram.posts raises APIError with 401
     api_error = APIError("Unauthorized")
     api_error.status_code = 401
-    mock_job.fetch = AsyncMock(side_effect=api_error)
 
     mock_client = AsyncMock()
-    mock_scraper = AsyncMock()
-    mock_scraper.profiles_trigger = AsyncMock(return_value=mock_job)
-    mock_client.scrape.instagram = mock_scraper
+    mock_search_ig = AsyncMock()
+    mock_search_ig.posts = AsyncMock(side_effect=api_error)
+    mock_client.search.instagram = mock_search_ig
 
     with patch("syft_ingest.sources.brightdata.BrightDataClient") as mock_client_class:
         mock_client_class.return_value.__aenter__.return_value = mock_client
@@ -454,37 +440,40 @@ async def test_tiktok_not_supported_in_phase_2(brightdata_fetcher):
 
 
 def test_run_fetcher_sync_with_brightdata(brightdata_fetcher):
-    """run_fetcher_sync bridges async BrightDataFetcher to sync callers."""
+    """run_fetcher_sync bridges async BrightDataFetcher to sync callers (Instagram search path)."""
+    from unittest.mock import MagicMock
+
     request = FetchRequest(
         platform=Platform.INSTAGRAM,
         extractor="brightdata",
         urls=["https://instagram.com/test"],
     )
-    mock_job = AsyncMock()
-    mock_job.snapshot_id = "job-sync-test"
-    mock_job.wait = AsyncMock()
-    mock_job.fetch = AsyncMock(
-        return_value={
-            "profiles": [
-                {
-                    "username": "testuser",
-                    "name": "Test",
-                    "bio": "Bio",
-                    "followers_count": 0,
-                    "posts_count": 0,
-                }
-            ]
+
+    mock_result = MagicMock()
+    mock_result.snapshot_id = "snap-sync-test"
+    mock_result.data = [
+        {
+            "post_id": "1",
+            "description": "Sync test post",
+            "user_posted": "testuser",
+            "likes": 0,
+            "num_comments": 0,
+            "date_posted": "2026-01-01T12:00:00Z",
+            "content_type": "Image",
+            "photos": [],
+            "url": "https://instagram.com/p/1",
         }
-    )
+    ]
+
     mock_client = AsyncMock()
-    mock_scraper = AsyncMock()
-    mock_scraper.profiles_trigger = AsyncMock(return_value=mock_job)
-    mock_client.scrape.instagram = mock_scraper
+    mock_search_ig = AsyncMock()
+    mock_search_ig.posts = AsyncMock(return_value=mock_result)
+    mock_client.search.instagram = mock_search_ig
 
     with patch("syft_ingest.sources.brightdata.BrightDataClient") as mock_client_class:
         mock_client_class.return_value.__aenter__.return_value = mock_client
         result = run_fetcher_sync(brightdata_fetcher, request)
-        assert result.remote_job_id == "job-sync-test"
+        assert result.remote_job_id == "snap-sync-test"
         assert len(result.items) >= 1
 
 
@@ -529,34 +518,36 @@ def test_run_fetcher_sync_propagates_fetch_auth_error(brightdata_fetcher):
 
 
 def test_parse_instagram_profile_response(brightdata_fetcher):
-    """Parse Instagram profile response into ProfileResult."""
-    raw_data = {
-        "profiles": [
-            {
-                "username": "testuser",
-                "name": "Test User",
-                "bio": "My bio",
-                "followers_count": 1000,
-                "posts_count": 50,
-                "profile_picture_url": "https://example.com/pic.jpg",
-            }
-        ]
-    }
+    """Parse Instagram search-scraper post response into ContentItem."""
+    # The search scraper returns a flat list of post dicts
+    raw_data = [
+        {
+            "post_id": "abc123",
+            "description": "My bio post",
+            "user_posted": "testuser",
+            "likes": 1000,
+            "num_comments": 50,
+            "date_posted": "2026-01-01T12:00:00Z",
+            "content_type": "Image",
+            "photos": ["https://example.com/pic.jpg"],
+            "url": "https://instagram.com/p/abc123",
+        }
+    ]
 
     items = brightdata_fetcher._parse_response(raw_data, "instagram")
 
     assert len(items) == 1
-    assert isinstance(items[0], ProfileResult)
-    assert items[0].author == "Test User"
-    assert items[0].title == "testuser"
-    assert items[0].text == "My bio"
-    assert items[0].followers_count == 1000
-    assert items[0].posts_count == 50
+    assert isinstance(items[0], ContentItem)
+    assert items[0].author == "testuser"
+    assert items[0].title == "abc123"
+    assert items[0].text == "My bio post"
     assert items[0].source_type == SourceType.INSTAGRAM
+    assert items[0].metadata["likes"] == 1000
 
 
 def test_parse_instagram_posts_response(brightdata_fetcher):
-    """Parse Instagram posts response into ProfileResult + SocialPostResult."""
+    """Parse Instagram legacy profiles_trigger format into ContentItem list."""
+    # Legacy profiles_trigger format: profile dict with nested posts list
     raw_data = [
         {
             "account": "testuser",
@@ -579,20 +570,20 @@ def test_parse_instagram_posts_response(brightdata_fetcher):
 
     items = brightdata_fetcher._parse_response(raw_data, "instagram")
 
-    # First item is ProfileResult, second is the post
+    # First item is the profile ContentItem, second is the post ContentItem
     assert len(items) == 2
-    assert isinstance(items[0], ProfileResult)
-    assert isinstance(items[1], SocialPostResult)
+    assert isinstance(items[0], ContentItem)
+    assert isinstance(items[1], ContentItem)
     assert items[1].text == "Great photo"
     assert items[1].author == "testuser"
-    assert items[1].likes_count == 100
-    assert items[1].comments_count == 5
+    assert items[1].metadata["likes"] == 100
+    assert items[1].metadata["comments"] == 5
     assert items[1].published_at is not None
     assert items[1].source_type == SourceType.INSTAGRAM
 
 
 def test_parse_instagram_video_post(brightdata_fetcher):
-    """Parse Instagram video post as ReelResult."""
+    """Parse Instagram video post from legacy profiles_trigger format into ContentItem."""
     raw_data = [
         {
             "account": "testuser",
@@ -615,15 +606,16 @@ def test_parse_instagram_video_post(brightdata_fetcher):
 
     items = brightdata_fetcher._parse_response(raw_data, "instagram")
 
-    # ProfileResult + ReelResult
+    # Profile ContentItem + post ContentItem
     assert len(items) == 2
-    assert isinstance(items[1], ReelResult)
+    assert isinstance(items[1], ContentItem)
     assert items[1].source_type == SourceType.INSTAGRAM
-    assert items[1].likes_count == 200
+    assert items[1].metadata["likes"] == 200
+    assert items[1].metadata["content_type"] == "Video"
 
 
 def test_parse_facebook_posts_response(brightdata_fetcher):
-    """Parse Facebook posts response into SocialPostResult."""
+    """Parse Facebook posts response into ContentItem."""
     raw_data = [
         {
             "post_id": "789",
@@ -641,17 +633,17 @@ def test_parse_facebook_posts_response(brightdata_fetcher):
     items = brightdata_fetcher._parse_response(raw_data, "facebook")
 
     assert len(items) == 1
-    assert isinstance(items[0], SocialPostResult)
+    assert isinstance(items[0], ContentItem)
     assert items[0].author == "Test Author"
     assert items[0].text == "My post"
-    assert items[0].likes_count == 50
-    assert items[0].comments_count == 10
+    assert items[0].metadata["likes"] == 50
+    assert items[0].metadata["num_comments"] == 10
     assert items[0].published_at is not None
     assert items[0].source_type == SourceType.FACEBOOK
 
 
 def test_parse_facebook_video_response(brightdata_fetcher):
-    """Parse Facebook video post as ReelResult."""
+    """Parse Facebook video/reel post into ContentItem."""
     raw_data = [
         {
             "post_id": "990",
@@ -671,10 +663,10 @@ def test_parse_facebook_video_response(brightdata_fetcher):
     items = brightdata_fetcher._parse_response(raw_data, "facebook")
 
     assert len(items) == 1
-    assert isinstance(items[0], ReelResult)
+    assert isinstance(items[0], ContentItem)
     assert items[0].source_type == SourceType.FACEBOOK
-    assert items[0].duration_seconds == 120
-    assert items[0].likes_count == 30
+    assert items[0].metadata["likes"] == 30
+    assert items[0].metadata["post_type"] == "Reel"
 
 
 def test_empty_response_returns_empty_list(brightdata_fetcher):
@@ -763,45 +755,46 @@ def test_unparseable_date_handled_gracefully(brightdata_fetcher):
 
 @pytest.mark.asyncio
 async def test_end_to_end_instagram_fetch_with_parsing(brightdata_fetcher):
-    """End-to-end Instagram fetch with full parsing."""
+    """End-to-end Instagram fetch with full parsing (search scraper path)."""
+    from unittest.mock import MagicMock
+
     request = FetchRequest(
         platform=Platform.INSTAGRAM,
         extractor="brightdata",
         urls=["https://instagram.com/testuser"],
     )
 
-    mock_job = AsyncMock()
-    mock_job.snapshot_id = "job-ig-e2e"
-    mock_job.wait = AsyncMock()
-    mock_job.fetch = AsyncMock(
-        return_value={
-            "profiles": [
-                {
-                    "username": "testuser",
-                    "name": "Test User",
-                    "bio": "My bio",
-                    "followers_count": 1000,
-                    "posts_count": 50,
-                }
-            ]
+    mock_result = MagicMock()
+    mock_result.snapshot_id = "snap-ig-e2e"
+    mock_result.data = [
+        {
+            "post_id": "post-001",
+            "description": "My caption",
+            "user_posted": "testuser",
+            "likes": 1000,
+            "num_comments": 50,
+            "date_posted": "2026-01-01T12:00:00Z",
+            "content_type": "Image",
+            "photos": ["https://example.com/photo.jpg"],
+            "url": "https://instagram.com/p/post001",
         }
-    )
+    ]
 
     mock_client = AsyncMock()
-    mock_scraper = AsyncMock()
-    mock_scraper.profiles_trigger = AsyncMock(return_value=mock_job)
-    mock_client.scrape.instagram = mock_scraper
+    mock_search_ig = AsyncMock()
+    mock_search_ig.posts = AsyncMock(return_value=mock_result)
+    mock_client.search.instagram = mock_search_ig
 
     with patch("syft_ingest.sources.brightdata.BrightDataClient") as mock_client_class:
         mock_client_class.return_value.__aenter__.return_value = mock_client
 
         result = await brightdata_fetcher.fetch_async(request)
 
-        assert result.remote_job_id == "job-ig-e2e"
+        assert result.remote_job_id == "snap-ig-e2e"
         assert result.remote_status == "ready"
         assert len(result.items) == 1
-        assert isinstance(result.items[0], ProfileResult)
-        assert result.items[0].author == "Test User"
+        assert isinstance(result.items[0], ContentItem)
+        assert result.items[0].author == "testuser"
         assert result.rows_fetched == 1
         assert result.fetched_at is not None
         assert result.content_hashes is not None
