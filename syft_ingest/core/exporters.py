@@ -12,17 +12,19 @@ from loguru import logger
 if TYPE_CHECKING:
     from syft_ingest.core.models import ContentItem, Corpus
 
-# Map platform metadata to site domains
+# Map platform/source to site domains
 _PLATFORM_SITES = {
     "facebook": "facebook.com",
     "instagram": "instagram.com",
     "threads": "threads.net",
+    "youtube": "youtube.com",
 }
 
-# Map platform metadata to source_type labels
+# Map platform/source to source_type labels
 _PLATFORM_SOURCE_TYPES = {
     "facebook": "social_media_post",
     "instagram": "social_media_post",
+    "youtube": "video",
 }
 
 
@@ -35,7 +37,7 @@ def _stable_id(item: ContentItem) -> str:
 
 def _item_to_dict(item: ContentItem) -> dict:
     """Map ContentItem to JSONL-compatible dict matching syft-influencer schema."""
-    platform = item.metadata.get("platform", "")
+    platform = item.metadata.get("platform", "") or item.source_type.value
     published_at_str = item.published_at.isoformat() if item.published_at else ""
     excerpt = item.text.split("\n\n", 1)[-1][:240] if item.text else ""
     tags = item.metadata.get("tags", [])
