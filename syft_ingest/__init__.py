@@ -12,7 +12,7 @@ from syft_ingest.core.fetcher import (
     run_fetcher_async,
     run_fetcher_sync,
 )
-from syft_ingest.core.gather import gather
+from syft_ingest.core.gather import async_gather, gather
 from syft_ingest.core.ingest import (
     ChunkingSpec,
     Embedder,
@@ -52,6 +52,7 @@ __all__ = [
     "SocialProfileSource",
     "SourceSpec",
     "UnsupportedBackendError",
+    "async_gather",
     "gather",
     "get_fetcher",
     "ingest_corpus",
