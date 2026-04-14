@@ -310,106 +310,141 @@ class BrightDataFetcher:
         )
         return items
 
-    def _parse_instagram_response(self, raw_data: dict[str, Any]) -> list[ContentItem]:
+    def _parse_instagram_response(
+        self, raw_data: dict[str, Any] | list[dict[str, Any]]
+    ) -> list[ContentItem]:
         """Parse Instagram scraper response into ContentItem list.
 
-        Handles profiles, posts (image/text), and reels (video).
+        BrightData returns a flat list of profile dicts, each containing an
+        "account" field (profile info) and a nested "posts" array.
+        Format: [{account, followers, posts_count, posts: [{caption, datetime, ...}]}]
+
+        Also supports legacy format: {"profiles": [...], "posts": [...]}.
 
         Args:
-            raw_data: Response dict from Instagram scraper.
+            raw_data: Response from BrightData — list of profile dicts or legacy dict.
 
         Returns:
             List of ProfileResult, SocialPostResult, or ReelResult items.
         """
         items: list[ContentItem] = []
 
-        # Parse profiles if present
-        if "profiles" in raw_data:
-            for profile in raw_data.get("profiles", []):
-                try:
-                    username = profile.get("username", "Unknown")
-                    name = profile.get("name", username)
-                    bio = profile.get("bio", "")
-                    followers = profile.get("followers_count", 0)
-                    following = profile.get("following_count", 0)
-                    posts_count = profile.get("posts_count", 0)
-                    profile_picture_url = profile.get("profile_picture_url")
-                    verified = profile.get("verified", False)
+        # BrightData returns a flat list of profile objects with nested posts
+        if isinstance(raw_data, list):
+            for profile_data in raw_data:
+                if not isinstance(profile_data, dict):
+                    continue
 
+                username = profile_data.get("account", "Unknown")
+
+                # Create ProfileResult from top-level profile data
+                try:
                     item = ProfileResult(
                         title=username,
-                        author=name,
-                        text=bio,
+                        author=username,
+                        text=profile_data.get("biography") or "",
                         url=f"https://instagram.com/{username}",
                         source_type=SourceType.INSTAGRAM,
                         published_at=None,
-                        followers_count=followers,
-                        following_count=following,
-                        posts_count=posts_count,
-                        profile_picture_url=profile_picture_url,
-                        verified=verified,
-                        bio=bio,
+                        followers_count=profile_data.get("followers", 0) or 0,
+                        following_count=profile_data.get("following", 0) or 0,
+                        posts_count=profile_data.get("posts_count", 0) or 0,
+                        profile_picture_url=None,
+                        verified=profile_data.get("is_verified", False),
+                        bio=profile_data.get("biography") or "",
                     )
                     items.append(item)
                 except Exception as e:
                     logger.warning("Failed to parse Instagram profile: {}", e)
 
-        # Parse posts if present
-        if "posts" in raw_data:
-            for post in raw_data.get("posts", []):
-                try:
-                    post_id = post.get("id", "Unknown Post")
-                    username = post.get("username", "Unknown")
-                    caption = post.get("caption", "")
-                    likes = post.get("likes_count", 0)
-                    comments = post.get("comments_count", 0)
-                    shares = post.get("shares_count", 0)
-                    created_at_str = post.get("created_at")
-                    media_urls = post.get("media_urls", [])
-                    has_video = post.get("has_video", False)
-                    video_duration = post.get("video_duration_seconds")
+                # Parse nested posts array
+                for post in profile_data.get("posts", []):
+                    try:
+                        post_id = post.get("id", "Unknown Post")
+                        caption = post.get("caption", "") or ""
+                        likes = post.get("likes", 0) or 0
+                        comments = post.get("comments", 0) or 0
+                        created_at_str = post.get("datetime")
 
-                    # Parse datetime if provided
-                    published_at = None
-                    if created_at_str:
-                        try:
-                            published_at = datetime.fromisoformat(
-                                created_at_str.replace("Z", "+00:00")
+                        # Parse datetime
+                        published_at = None
+                        if created_at_str:
+                            try:
+                                published_at = datetime.fromisoformat(
+                                    created_at_str.replace("Z", "+00:00")
+                                )
+                            except (ValueError, AttributeError):
+                                logger.debug("Could not parse date {}", created_at_str)
+
+                        # Collect media URLs
+                        media_urls = []
+                        if post.get("video_url"):
+                            media_urls.append(post["video_url"])
+                        elif post.get("image_url"):
+                            media_urls.append(post["image_url"])
+
+                        # Detect video content
+                        content_type = post.get("content_type", "").lower()
+                        is_video = content_type == "video" or bool(
+                            post.get("video_url")
+                        )
+
+                        if is_video:
+                            item = ReelResult(
+                                title=post_id,
+                                author=username,
+                                text=caption,
+                                url=post.get("url"),
+                                source_type=SourceType.INSTAGRAM,
+                                published_at=published_at,
+                                duration_seconds=None,
+                                likes_count=likes,
+                                comments_count=comments,
+                                shares_count=0,
+                                media_urls=media_urls,
                             )
-                        except (ValueError, AttributeError):
-                            logger.debug("Could not parse date {}", created_at_str)
+                        else:
+                            item = SocialPostResult(
+                                title=post_id,
+                                author=username,
+                                text=caption,
+                                url=post.get("url"),
+                                source_type=SourceType.INSTAGRAM,
+                                published_at=published_at,
+                                likes_count=likes,
+                                comments_count=comments,
+                                shares_count=0,
+                                media_urls=media_urls,
+                            )
 
-                    if has_video or video_duration:
-                        item = ReelResult(
-                            title=post_id,
-                            author=username,
-                            text=caption,
-                            url=post.get("post_url"),
-                            source_type=SourceType.INSTAGRAM,
-                            published_at=published_at,
-                            duration_seconds=video_duration,
-                            likes_count=likes,
-                            comments_count=comments,
-                            shares_count=shares,
-                            media_urls=media_urls,
-                        )
-                    else:
-                        item = SocialPostResult(
-                            title=post_id,
-                            author=username,
-                            text=caption,
-                            url=post.get("post_url"),
-                            source_type=SourceType.INSTAGRAM,
-                            published_at=published_at,
-                            likes_count=likes,
-                            comments_count=comments,
-                            shares_count=shares,
-                            media_urls=media_urls,
-                        )
+                        items.append(item)
+                    except Exception as e:
+                        logger.warning("Failed to parse Instagram post: {}", e)
 
+            return items
+
+        # Legacy format: {"profiles": [...], "posts": [...]}
+        if isinstance(raw_data, dict):
+            for profile in raw_data.get("profiles", []):
+                try:
+                    username = profile.get("username", "Unknown")
+                    item = ProfileResult(
+                        title=username,
+                        author=profile.get("name", username),
+                        text=profile.get("bio", ""),
+                        url=f"https://instagram.com/{username}",
+                        source_type=SourceType.INSTAGRAM,
+                        published_at=None,
+                        followers_count=profile.get("followers_count", 0),
+                        following_count=profile.get("following_count", 0),
+                        posts_count=profile.get("posts_count", 0),
+                        profile_picture_url=profile.get("profile_picture_url"),
+                        verified=profile.get("verified", False),
+                        bio=profile.get("bio", ""),
+                    )
                     items.append(item)
                 except Exception as e:
-                    logger.warning("Failed to parse Instagram post: {}", e)
+                    logger.warning("Failed to parse Instagram profile: {}", e)
 
         return items
 

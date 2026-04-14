@@ -556,60 +556,70 @@ def test_parse_instagram_profile_response(brightdata_fetcher):
 
 
 def test_parse_instagram_posts_response(brightdata_fetcher):
-    """Parse Instagram posts response into SocialPostResult with metadata."""
-    raw_data = {
-        "posts": [
-            {
-                "id": "123",
-                "username": "testuser",
-                "caption": "Great photo",
-                "likes_count": 100,
-                "comments_count": 5,
-                "shares_count": 2,
-                "created_at": "2026-01-01T12:00:00Z",
-                "media_urls": ["url1", "url2"],
-                "has_video": False,
-            }
-        ]
-    }
+    """Parse Instagram posts response into ProfileResult + SocialPostResult."""
+    raw_data = [
+        {
+            "account": "testuser",
+            "followers": 500,
+            "posts_count": 10,
+            "posts": [
+                {
+                    "id": "123",
+                    "caption": "Great photo",
+                    "likes": 100,
+                    "comments": 5,
+                    "datetime": "2026-01-01T12:00:00Z",
+                    "image_url": "https://example.com/photo.jpg",
+                    "content_type": "Image",
+                    "url": "https://instagram.com/p/abc123",
+                }
+            ],
+        }
+    ]
 
     items = brightdata_fetcher._parse_response(raw_data, "instagram")
 
-    assert len(items) == 1
-    assert isinstance(items[0], SocialPostResult)
-    assert items[0].text == "Great photo"
-    assert items[0].author == "testuser"
-    assert items[0].likes_count == 100
-    assert items[0].comments_count == 5
-    assert len(items[0].media_urls) == 2
-    assert items[0].published_at is not None
-    assert items[0].source_type == SourceType.INSTAGRAM
+    # First item is ProfileResult, second is the post
+    assert len(items) == 2
+    assert isinstance(items[0], ProfileResult)
+    assert isinstance(items[1], SocialPostResult)
+    assert items[1].text == "Great photo"
+    assert items[1].author == "testuser"
+    assert items[1].likes_count == 100
+    assert items[1].comments_count == 5
+    assert items[1].published_at is not None
+    assert items[1].source_type == SourceType.INSTAGRAM
 
 
 def test_parse_instagram_video_post(brightdata_fetcher):
     """Parse Instagram video post as ReelResult."""
-    raw_data = {
-        "posts": [
-            {
-                "id": "456",
-                "username": "testuser",
-                "caption": "Check this video",
-                "likes_count": 200,
-                "has_video": True,
-                "video_duration_seconds": 60,
-                "created_at": "2026-01-01T12:00:00Z",
-                "media_urls": ["video_url"],
-            }
-        ]
-    }
+    raw_data = [
+        {
+            "account": "testuser",
+            "followers": 500,
+            "posts_count": 5,
+            "posts": [
+                {
+                    "id": "456",
+                    "caption": "Check this video",
+                    "likes": 200,
+                    "comments": 0,
+                    "datetime": "2026-01-01T12:00:00Z",
+                    "content_type": "Video",
+                    "url": "https://instagram.com/p/def456",
+                    "video_url": "https://example.com/video.mp4",
+                }
+            ],
+        }
+    ]
 
     items = brightdata_fetcher._parse_response(raw_data, "instagram")
 
-    assert len(items) == 1
-    assert isinstance(items[0], ReelResult)
-    assert items[0].source_type == SourceType.INSTAGRAM
-    assert items[0].duration_seconds == 60
-    assert items[0].likes_count == 200
+    # ProfileResult + ReelResult
+    assert len(items) == 2
+    assert isinstance(items[1], ReelResult)
+    assert items[1].source_type == SourceType.INSTAGRAM
+    assert items[1].likes_count == 200
 
 
 def test_parse_facebook_posts_response(brightdata_fetcher):
