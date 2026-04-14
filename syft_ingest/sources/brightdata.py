@@ -330,14 +330,7 @@ class BrightDataFetcher:
     def _parse_instagram_response(
         self, raw_data: dict[str, Any] | list[dict[str, Any]]
     ) -> list[ContentItem]:
-        """Parse Instagram search scraper response into ContentItem list.
-
-        The search scraper (client.search.instagram.posts) returns a flat list
-        of post dicts with fields: description, post_id, user_posted, likes,
-        num_comments, date_posted, content_type, photos, thumbnail, url.
-
-        Also supports legacy profiles_trigger format (nested posts in profile).
-        """
+        """Parse Instagram response — 5-field envelope + raw_data passthrough."""
         items: list[ContentItem] = []
 
         if not isinstance(raw_data, list):
@@ -347,28 +340,9 @@ class BrightDataFetcher:
             if not isinstance(entry, dict):
                 continue
 
-            # Detect format: search scraper has "description"/"post_id",
-            # profiles_trigger has "account"/"posts" (nested)
             if "posts" in entry and isinstance(entry.get("posts"), list):
-                # Legacy profiles_trigger format: profile with nested posts
+                # Legacy profiles_trigger format: flatten nested posts
                 username = entry.get("account") or entry.get("username") or "Unknown"
-                profile_meta = {k: v for k, v in entry.items() if k != "posts"}
-                items.append(
-                    ContentItem(
-                        title=username,
-                        author=username,
-                        text=entry.get("biography") or "",
-                        url=entry.get("profile_url")
-                        or f"https://instagram.com/{username}",
-                        source_type=SourceType.INSTAGRAM,
-                        published_at=None,
-                        metadata={
-                            "platform": "instagram",
-                            "type": "profile",
-                            **profile_meta,
-                        },
-                    )
-                )
                 for post in entry["posts"]:
                     try:
                         items.append(
@@ -379,11 +353,7 @@ class BrightDataFetcher:
                                 url=post.get("url"),
                                 source_type=SourceType.INSTAGRAM,
                                 published_at=self._parse_date(post.get("datetime")),
-                                metadata={
-                                    "platform": "instagram",
-                                    "type": "post",
-                                    **post,
-                                },
+                                raw_data=post,
                             )
                         )
                     except Exception as e:
@@ -391,35 +361,26 @@ class BrightDataFetcher:
             else:
                 # Search scraper format: flat post dict
                 try:
-                    author = entry.get("user_posted") or "Unknown"
                     items.append(
                         ContentItem(
                             title=entry.get("post_id") or entry.get("shortcode") or "",
-                            author=author,
+                            author=entry.get("user_posted") or "",
                             text=entry.get("description") or "",
                             url=entry.get("url") or "",
                             source_type=SourceType.INSTAGRAM,
                             published_at=self._parse_date(entry.get("date_posted")),
-                            metadata={
-                                "platform": "instagram",
-                                "type": "post",
-                                **entry,
-                            },
+                            raw_data=entry,
                         )
                     )
                 except Exception as e:
-                    logger.warning("Failed to parse Instagram search post: {}", e)
+                    logger.warning("Failed to parse Instagram post: {}", e)
 
         return items
 
     def _parse_facebook_response(
         self, raw_data: dict[str, Any] | list[dict[str, Any]]
     ) -> list[ContentItem]:
-        """Parse Facebook scraper response into ContentItem list.
-
-        Extracts minimal fields for ContentItem, preserves the full raw
-        BrightData response in metadata for downstream consumers.
-        """
+        """Parse Facebook response — 5-field envelope + raw_data passthrough."""
         items: list[ContentItem] = []
 
         if isinstance(raw_data, list):
@@ -431,20 +392,17 @@ class BrightDataFetcher:
 
         for post in posts:
             try:
-                author = (
-                    post.get("page_name") or post.get("user_username_raw") or "Unknown"
-                )
-                published_at = self._parse_date(post.get("date_posted"))
-
                 items.append(
                     ContentItem(
-                        title=post.get("post_id", ""),
-                        author=author,
+                        title=post.get("post_id") or "",
+                        author=post.get("page_name")
+                        or post.get("user_username_raw")
+                        or "",
                         text=post.get("content") or "",
-                        url=post.get("url", ""),
+                        url=post.get("url") or "",
                         source_type=SourceType.FACEBOOK,
-                        published_at=published_at,
-                        metadata={"platform": "facebook", "type": "post", **post},
+                        published_at=self._parse_date(post.get("date_posted")),
+                        raw_data=post,
                     )
                 )
             except Exception as e:

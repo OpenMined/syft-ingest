@@ -9,6 +9,8 @@ build/
 .env
 *.DS_Store
 .research
+.planning/
+
 data/
 outputs/
-.planning/
+data*/

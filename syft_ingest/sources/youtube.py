@@ -520,6 +520,7 @@ class YtDlpFetcher:
                 duration_seconds=duration_seconds,
                 view_count=view_count,
                 metadata=metadata,
+                raw_data=info,
             )
 
             # Optionally download video if enabled (advanced feature)

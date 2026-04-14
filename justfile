@@ -13,6 +13,10 @@ default:
 test *args:
     uv run pytest -n auto {{args}}
 
+# Run notebook E2E tests (requires API keys for BrightData cells)
+test-nb *args:
+    uv run pytest --nbmake notebooks/ -x {{args}}
+
 # Remove caches
 clean:
     @echo -e "{{_red}}Cleaning caches…{{_nc}}"

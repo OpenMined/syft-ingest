@@ -64,6 +64,7 @@ def _item_to_dict(item: ContentItem) -> dict:
         "excerpt": excerpt,
         "ingested_at": datetime.now(UTC).isoformat(),
         "metadata": item.metadata,
+        "raw_data": item.raw_data,
     }
 
 
