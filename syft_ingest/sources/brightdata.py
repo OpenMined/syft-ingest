@@ -480,7 +480,7 @@ class BrightDataFetcher:
                     for att in attachments:
                         if att.get("video_length"):
                             try:
-                                duration = int(att["video_length"]) / 1000
+                                duration = int(int(att["video_length"]) / 1000)
                             except (ValueError, TypeError):
                                 pass
                             break

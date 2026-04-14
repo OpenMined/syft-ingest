@@ -334,7 +334,7 @@ async def test_end_to_end_facebook_video_fetch(
         assert len(result.items) == 1
         assert isinstance(result.items[0], ReelResult)
         assert result.items[0].source_type == SourceType.FACEBOOK
-        assert result.items[0].duration_seconds == 120.0
+        assert result.items[0].duration_seconds == 120
 
 
 # ---- Sync wrapper tests ----

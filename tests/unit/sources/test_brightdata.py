@@ -663,7 +663,7 @@ def test_parse_facebook_video_response(brightdata_fetcher):
     assert len(items) == 1
     assert isinstance(items[0], ReelResult)
     assert items[0].source_type == SourceType.FACEBOOK
-    assert items[0].duration_seconds == 120.0
+    assert items[0].duration_seconds == 120
     assert items[0].likes_count == 30
 
 
