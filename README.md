@@ -8,22 +8,10 @@ Content aggregator — person-centric or topic-centric. Scrape, normalize, deliv
 uv sync
 ```
 
-For multimodal video embeddings (frame + transcript), install extras:
-
-```bash
-uv sync --extra multimodal
-```
-
 For reusable text ingest into Qdrant:
 
 ```bash
 uv sync --extra qdrant
-```
-
-Optional auto-transcription with Whisper:
-
-```bash
-uv sync --extra podcast
 ```
 
 ### Data
@@ -38,74 +26,118 @@ This provides Facebook and Instagram export samples at `data/creators/syft-influ
 
 ## What it can do
 
-**Phase 1 (current):** Parse Facebook and Instagram data exports into structured content, export as JSONL.
+Fetch content from YouTube, Facebook, and Instagram. Normalize to a unified `Corpus` of `ContentItem` objects. Export as JSONL. Optionally ingest into a vector store (Qdrant) for RAG.
 
-- Facebook data export parsing (Meta's "Download Your Information" JSON format)
-- Facebook crawler export parsing (Bright Data / similar JSON exports)
-- Instagram data export parsing (same Meta format, different schema)
-- Instagram crawler export parsing (Bright Data / similar JSON exports)
-- Meta encoding bug fix (UTF-8-as-Latin-1 mojibake)
-- Hashtag and mention extraction
-- Post-level representation extraction for Facebook (`post_ref` + `post_representation`):
-  text, tags, mentions, videos, images, and media provenance fields
-- Content deduplication (by URL and content hash)
-- Context enrichment (`[Facebook post by Author | Published: 2026-03-19]\n\ntext`)
-- JSONL, JSON, and text file export
-- Reusable text ingest API for Qdrant (remote URL or local on-disk path)
-- Multimodal video embedding script for local video files (sample frames + transcript fusion)
+**Supported platforms:**
+
+| Platform | Fetcher | How it works |
+|---|---|---|
+| YouTube | `YtDlpFetcher` (sync) | yt-dlp: video metadata, captions, optional download |
+| Facebook | `BrightDataFetcher` (async) | BrightData SDK: trigger/poll/fetch scrape jobs |
+| Instagram | `BrightDataFetcher` (async) | BrightData SDK: search scraper with server-side post limiting |
+| Local | `LocalFetcher` (sync) | Parse Facebook/Instagram data exports from disk |
 
 ## API
 
-### `gather()` — main entry point
+### `gather()` / `async_gather()` — main entry points
+
+Two functions, one return type each. Pick the one that matches your runtime context.
 
 ```python
-import syft_ingest
+import syft_ingest as si
 
-corpus = syft_ingest.gather(
-    "Creator Name",
-    sources=["local"],
-    local_dirs=["./data/creators/syft-influencer-test/fb-page-2026-03-18/"],
+# Sync — scripts, CLI, plain Python
+corpus = si.gather("youtube", ["https://www.youtube.com/watch?v=zY2dAK-pMPI"])
+
+# Async — Jupyter with await, async servers
+corpus = await si.async_gather("youtube", ["https://www.youtube.com/watch?v=zY2dAK-pMPI"])
+```
+
+Both return a `Corpus` object. Pass platform-specific config as keyword arguments:
+
+```python
+# YouTube: channel enumeration with post limit
+corpus = si.gather(
+    "youtube",
+    ["https://www.youtube.com/@iamtrask"],
+    playlistend=5,
+    socket_timeout=60,
+)
+
+# Facebook: BrightData scrape with server-side post limit
+corpus = await si.async_gather(
+    "facebook",
+    ["https://www.facebook.com/profile.php?id=61583734012155"],
+    author="Andrew Trask",
+    posts_limit=10,
+    timeout=300,
+)
+
+# Instagram: BrightData search with server-side post limit
+corpus = await si.async_gather(
+    "instagram",
+    ["https://www.instagram.com/iamtrask/"],
+    author="Andrew Trask",
+    posts_limit=5,
+    timeout=300,
+)
+
+# Local: parse data exports from disk
+corpus = si.gather(
+    "local",
+    ["./data/creators/syft-influencer-test/fb-page-2026-03-18/"],
+    author="Andrew Trask",
 )
 ```
 
-Returns a `Corpus` object containing parsed `ContentItem` objects.
+### Concurrent fetching
 
-The older `sources=["local"], local_dirs=[...]` API remains supported, but
-for app-to-library integrations the preferred entry point is a typed source spec:
+The async API enables concurrent scraping — total time equals the slowest scrape, not the sum:
 
 ```python
-import syft_ingest
+import asyncio
 
-corpus = syft_ingest.gather(
-    "Katy Stevens",
-    source_specs=[
-        syft_ingest.SocialProfileSource(
-            platform="instagram",
-            extractor="brightdata",
-            handle="katykicker",
-            profile_url="https://www.instagram.com/katykicker/",
-            raw_dirs=["./runs/20260403T093140Z/"],
-            start_date="2026-03-01",
-            source_slug="katykicker-instagram",
-        )
-    ],
+corpus_yt, corpus_fb, corpus_ig = await asyncio.gather(
+    si.async_gather("youtube", ["https://www.youtube.com/@iamtrask"], playlistend=3),
+    si.async_gather("facebook", ["https://facebook.com/..."], posts_limit=5, timeout=300),
+    si.async_gather("instagram", ["https://instagram.com/..."], posts_limit=5, timeout=300),
 )
 ```
-
-`SocialProfileSource` carries the creator/platform/source identity explicitly
-while still parsing local raw export directories.
 
 ### `corpus.export()` — output to file
 
 ```python
-# JSONL (one JSON object per line — feeds into syft-influencer's ingest.py)
-corpus.export("jsonl", output="output.jsonl")
+corpus.export("./output.jsonl")      # JSONL (one JSON object per line)
+corpus.export("./output.json")       # JSON (single array)
+corpus.export("./output/", fmt="text")  # Text (one .txt per item)
+```
 
-# JSON (single array)
-corpus.export("json", output="output.json")
+### `corpus.all_items()` — access items in memory
 
-# Text (one .txt file per item)
-corpus.export("text", output_dir="./output-texts/")
+```python
+for item in corpus.all_items():
+    print(item.title, item.url, item.source_type)
+    print(item.metadata)  # platform-specific raw data
+```
+
+### `ingest_jsonl()` — ingest normalized JSONL into Qdrant
+
+```python
+report = si.ingest_jsonl(
+    "./output.jsonl",
+    destination=si.QdrantDestination(
+        collection_name="my-collection",
+        url="http://127.0.0.1:6333",
+    ),
+    embedding=si.EmbeddingSpec(
+        backend="fastembed",
+        model="BAAI/bge-small-en-v1.5",
+    ),
+    chunking=si.ChunkingSpec(
+        chunk_size=1000,
+        chunk_overlap=250,
+    ),
+)
 ```
 
 ### CLI
@@ -114,247 +146,40 @@ corpus.export("text", output_dir="./output-texts/")
 uv run syft-ingest local-export \
   --author "Creator Name" \
   --input-dir ./data/creators/creator/facebook-brightdata \
-  --input-dir ./data/creators/creator/instagram-brightdata \
   --format jsonl \
   --output ./output/creator_social_posts.jsonl
 ```
 
-The CLI is a thin wrapper over the same library seam and is useful for manual
-runs, but application code should prefer importing `gather(...)` directly.
+## Architecture
 
-### `ingest_jsonl()` — ingest a normalized manifest into Qdrant
+### Dual sync/async protocol system
 
-```python
-import syft_ingest
+Fetcher authors implement whichever I/O model is natural for their underlying library. The framework bridges between them automatically.
 
-report = syft_ingest.ingest_jsonl(
-    "./output/creator_social_posts.jsonl",
-    destination=syft_ingest.QdrantDestination(
-        collection_name="katy-stevens",
-        url="http://127.0.0.1:6333",
-    ),
-    embedding=syft_ingest.EmbeddingSpec(
-        backend="fastembed",
-        model="BAAI/bge-small-en-v1.5",
-    ),
-    chunking=syft_ingest.ChunkingSpec(
-        chunk_size=1000,
-        chunk_overlap=250,
-    ),
-)
+```
+ContentFetcher (sync)          AsyncContentFetcher (async)
+  def fetch(request)             async def fetch_async(request)
+       │                                  │
+       └──── run_fetcher_sync ────────────┘  (sync callers)
+       └──── run_fetcher_async ───────────┘  (async callers)
+                    │
+              gather() / async_gather()
 ```
 
-For local smoke tests without a separate Qdrant service:
+- **Sync fetchers** (yt-dlp, local): implement `fetch()`. When called from async context, the framework wraps them in `asyncio.to_thread()`.
+- **Async fetchers** (BrightData SDK): implement `fetch_async()`. When called from sync context, the framework bridges via `asyncio.run()` (Jupyter-safe).
+- **Registry**: maps `(platform, extractor)` pairs to fetcher instances. Accepts both protocol types.
 
-```python
-destination = syft_ingest.QdrantDestination(
-    collection_name="katy-stevens-smoke",
-    path="/tmp/qdrant-katy-smoke",
-)
-```
+### Config options
 
-`IngestReport` returns:
-- `collection_name`
-- `documents_total`
-- `chunks_total`
-- `point_ids`
-- `embedding_contract`
-
-If the destination collection already exists, `ingest_jsonl(...)` validates that
-sampled points in that collection match the requested embedding contract. If you
-intend to switch models or backends for an existing collection, rerun with
-`reset_collection=True` instead of mixing embedding spaces.
-
-### `ingest_corpus()` — gather and ingest without writing JSONL first
-
-```python
-import syft_ingest
-
-corpus = syft_ingest.gather(
-    "Katy Stevens",
-    source_specs=[
-        syft_ingest.SocialProfileSource(
-            platform="instagram",
-            extractor="brightdata",
-            handle="katykicker",
-            profile_url="https://www.instagram.com/katykicker/",
-            raw_dirs=["./runs/20260403T093140Z/"],
-        )
-    ],
-)
-
-report = syft_ingest.ingest_corpus(
-    corpus,
-    destination=syft_ingest.QdrantDestination(
-        collection_name="katy-stevens",
-        url="http://127.0.0.1:6333",
-    ),
-)
-```
-
-### `corpus.all_items()` — access items in memory
-
-```python
-for item in corpus.all_items():
-    print(item.title, item.url, item.metadata["platform"])
-```
-
-### Direct Bright Data Facebook parsing
-
-```python
-from pathlib import Path
-from syft_ingest.sources.facebook import parse_facebook_brightdata_file
-
-items = parse_facebook_brightdata_file(
-    Path("data/creators/jen-lazzari/paintedwildflower-fbpage/brightdata-sd_...json"),
-    author="Jen Lazzari",
-)
-```
-
-### Multiple sources
-
-```python
-corpus = syft_ingest.gather(
-    "Creator Name",
-    sources=["local"],
-    local_dirs=[
-        "./data/creators/creator/fb-page-export/",
-        "./data/creators/creator/instagram-export/",
-    ],
-)
-```
-
-Facebook and Instagram exports are auto-detected. Adding a new platform parser requires zero changes to the dispatcher.
-
-## Multimodal Video Embeddings
-
-Embed non-YouTube videos by combining sampled frame embeddings with nearby transcript text.
-
-Embedding contract:
-- backend: `sentence-transformers`
-- default model: `clip-ViT-B-32`
-- output vectors are L2-normalized
-- output rows include `embedding_backend`, `embedding_family`, `embedding_model`,
-  `embedding_space`, and `embedding_normalized`
-
-Consumers such as `syft-influencer` should use the same query embedding backend/model
-when searching a collection produced by these scripts.
-
-Run:
-
-```bash
-uv run python scripts/embed_video_multimodal.py ./data/videos/example.mp4 \
-  --output ./output/video_embeddings.jsonl \
-  --interval-seconds 2 \
-  --clip-model clip-ViT-B-32
-```
-
-With transcript file (`.json` or `.jsonl` segments):
-
-```bash
-uv run python scripts/embed_video_multimodal.py ./data/videos/example.mp4 \
-  --transcript-json ./data/videos/example_transcript.json \
-  --output ./output/video_embeddings.jsonl
-```
-
-With automatic Whisper transcription:
-
-```bash
-uv run python scripts/embed_video_multimodal.py ./data/videos/example.mp4 \
-  --whisper-model base \
-  --output ./output/video_embeddings.jsonl
-```
-
-Transcript segment schema:
-
-```json
-[
-  {"start": 0.0, "end": 2.4, "text": "Intro scene"},
-  {"start": 2.4, "end": 6.8, "text": "Speaker explains the setup"}
-]
-```
-
-## Multimodal Post Embeddings
-
-Embed Facebook posts as one vector per post using:
-- post text (no chunking),
-- local image files from the post, and
-- sampled frames from local post videos.
-
-Optional summarization for long text is available but disabled by default.
-
-These embeddings use the same explicit CLIP contract as the video pipeline:
-`sentence-transformers` + `clip-ViT-B-32` by default, with alignment metadata
-stored on each output row so downstream retrieval can verify compatibility.
-
-```bash
-uv run python scripts/embed_posts_multimodal.py \
-  --manifest-jsonl ../syft-influencer/data/creators/jen-lazzari/paintedwildflower-fbpage/local-sync/manifests/posts_local_manifest.jsonl \
-  --output ./output/post_embeddings_multimodal.jsonl \
-  --max-posts 5
-```
-
-Enable summarization only when needed:
-
-```bash
-uv run python scripts/embed_posts_multimodal.py \
-  --manifest-jsonl ../syft-influencer/data/creators/jen-lazzari/paintedwildflower-fbpage/local-sync/manifests/posts_local_manifest.jsonl \
-  --summarize-long-text \
-  --summary-min-chars 900 \
-  --summary-max-chars 420
-
-# Optional: include tags directly in embedding text (default is metadata-only tags)
-uv run python scripts/embed_posts_multimodal.py \
-  --manifest-jsonl ../syft-influencer/data/creators/jen-lazzari/paintedwildflower-fbpage/local-sync/manifests/posts_local_manifest.jsonl \
-  --include-tags-in-embedding-text
-```
-
-## JSONL output schema
-
-Each line in the JSONL output:
-
-```json
-{
-  "text": "[Facebook post by Creator | Published: 2026-03-19]\n\nPost content...",
-  "title": "First line of post text",
-  "url": "https://example.com/blog-post",
-  "source": "local",
-  "source_type": "",
-  "author": "Creator Name",
-  "site": "",
-  "tags": ["federatedlearning", "ai", "openmined"],
-  "metadata": {
-    "platform": "facebook",
-    "extractor": "brightdata",
-    "content_hash": "abc123...",
-    "post_ref": {
-      "platform": "facebook",
-      "post_id": "122243006504090679",
-      "url": "https://www.facebook.com/reel/1378171301018195/"
-    },
-    "post_representation": {
-      "author": "Creator Name",
-      "published_at": "2026-03-19T12:00:00+00:00",
-      "text": "Easy flower tutorial #watercolor",
-      "tags": ["watercolor"],
-      "mentions": [],
-      "links": [],
-      "media": [
-        {
-          "url": "https://video-...mp4",
-          "media_type": "video",
-          "source_fields": ["attachments[0].video_url"]
-        },
-        {
-          "url": "https://scontent-...jpg",
-          "media_type": "image",
-          "source_fields": ["attachments[0].thumbnail_url"]
-        }
-      ]
-    }
-  }
-}
-```
+| Option | Platform | Description |
+|---|---|---|
+| `socket_timeout` | YouTube | Network timeout in seconds (default: 30) |
+| `playlistend` | YouTube | Max videos from channel/playlist (default: 50) |
+| `download_full_video` | YouTube | Enable full video download (default: false) |
+| `timeout` | Facebook/Instagram | Scrape job timeout in seconds (default: 180) |
+| `poll_interval` | Facebook | Job status check interval in seconds (default: 5) |
+| `posts_limit` | Facebook/Instagram | Limit posts fetched, server-side for FB/IG (default: no limit) |
 
 ## Tests
 
@@ -362,14 +187,10 @@ Each line in the JSONL output:
 uv run pytest tests/ -v
 ```
 
-48 tests across 5 files:
+271 tests across unit and integration suites. 15 tests skip if test data is not available (clone the data repo to run them).
 
-| File | Tests | What it covers |
+## Environment variables
+
+| Variable | Required | Description |
 |---|---|---|
-| `test_meta_utils.py` | 19 | Encoding fix, hashtag/mention extraction, normalization, content hash, `is_bare_url`, `derive_title` |
-| `test_facebook.py` | 8 | FB post text/URL extraction, export detection, integration with real data |
-| `test_instagram.py` | 6 | IG post text extraction, export detection, integration with real data, cross-post detection |
-| `test_local.py` | 5 | Auto-detection dispatcher, multi-dir, nonexistent/unrecognized dirs |
-| `test_e2e.py` | 9 | Full `gather()` -> `export()` pipeline: JSONL/JSON/text formats, dedup, bare-URL filtering, graceful degradation |
-
-Tests require the data repo cloned into `./data` (see Setup above).
+| `BRIGHTDATA_API_TOKEN` | For Facebook/Instagram | BrightData API token |
