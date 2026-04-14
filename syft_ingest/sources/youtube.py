@@ -85,215 +85,108 @@ class YtDlpFetcher:
         )
 
     def fetch(self, request: FetchRequest) -> FetchResult:
-        """Fetch and extract metadata for YouTube videos or channels.
+        """Fetch YouTube videos or channels into VideoResult items.
 
-        Detects channel/playlist URLs and enumerates videos, or processes single videos.
-        Optionally downloads videos if config['download_full_video'] and output_dir set.
-
-        Steps:
-        1. Merge request.config into effective config (per-request overrides)
-        2. Check if first URL is channel/playlist (heuristic: /channel/, /@, /playlist, /c/)
-        3. If channel: enumerate videos, extract metadata for each
-        4. If single video: extract metadata for all provided URLs
-        5. Optionally download if enabled and output_dir provided
-        6. Return FetchResult with items and artifact_paths
-
-        Args:
-            request: FetchRequest with urls, output_dir, and config.
-
-        Returns:
-            FetchResult with extracted VideoResult items and artifact_paths.
-
-        Raises:
-            FetchAuthError: Age-restricted or private video.
-            FetchEmptyResultError: Video not found.
-            FetchTimeoutError: Request timeout exceeded.
-            FetchError: Generic extraction failure.
+        Detects channel/playlist vs single video URLs, extracts metadata and
+        captions, optionally downloads video files. Filters by start_date
+        when provided.
         """
-        items: list[VideoResult] = []
-        artifact_paths: dict[str, Path] = {}
-        output_dir = request.output_dir
-        first_error: FetchError | None = (
-            None  # Track first error for later re-raise if needed
-        )
-
-        # Merge request.config into effective config (per-request overrides take precedence)
         effective_config = {**self._config, **request.config}
         download_enabled = effective_config.get("download_full_video", False)
 
-        logger.info(
-            "Fetching {n} YouTube URL(s)",
-            n=len(request.urls),
-        )
-
-        # Check if first URL is a channel/playlist
-        first_url = request.urls[0]
-        is_channel = self._is_channel_url(first_url)
-
-        try:
-            # Parse start_date cutoff for post-extraction filtering
-            start_date_cutoff = None
-            if request.start_date:
+        # Parse start_date cutoff for post-extraction filtering
+        start_date_cutoff = None
+        if request.start_date:
+            try:
                 start_date_cutoff = datetime.strptime(
                     request.start_date, "%Y-%m-%d"
                 ).replace(tzinfo=UTC)
+            except ValueError as e:
+                raise FetchError(
+                    f"Invalid start_date format: {request.start_date!r}. "
+                    f"Expected YYYY-MM-DD: {e}",
+                    platform="youtube",
+                ) from e
 
-            if is_channel:
-                logger.info("Detected channel/playlist URL: {url}", url=first_url)
-                # Enumerate videos from channel
-                video_urls = self._enumerate_channel(
-                    first_url,
-                    limit=effective_config.get("playlistend", DEFAULT_PLAYLIST_LIMIT),
+        # Resolve video URLs — either enumerate channel or use provided URLs
+        first_url = request.urls[0]
+        if self._is_channel_url(first_url):
+            logger.info("Detected channel/playlist URL: {url}", url=first_url)
+            video_urls = self._enumerate_channel(
+                first_url,
+                limit=effective_config.get("playlistend", DEFAULT_PLAYLIST_LIMIT),
+                config=effective_config,
+            )
+            logger.info("Enumerated {n} videos from channel", n=len(video_urls))
+            stop_on_old = True  # Channels are newest-first, stop early
+        else:
+            video_urls = request.urls
+            stop_on_old = False
+
+        # Extract metadata for each video
+        items: list[VideoResult] = []
+        artifact_paths: dict[str, Path] = {}
+
+        for video_url in video_urls:
+            try:
+                result = self._extract_video_info_and_captions(
+                    video_url,
+                    download=download_enabled,
+                    output_dir=request.output_dir,
                     config=effective_config,
                 )
-                logger.info("Enumerated {n} videos from channel", n=len(video_urls))
+                if not result:
+                    continue
 
-                # Extract metadata for each video
-                for video_url in video_urls:
-                    try:
-                        video_result = self._extract_video_info_and_captions(
-                            video_url,
-                            download=download_enabled,
-                            output_dir=output_dir,
-                            config=effective_config,
+                # Date filter
+                if (
+                    start_date_cutoff
+                    and result.published_at
+                    and result.published_at < start_date_cutoff
+                ):
+                    if stop_on_old:
+                        logger.info(
+                            "Reached video before {cutoff}: {title}. Stopping early.",
+                            cutoff=request.start_date,
+                            title=result.title,
                         )
-                        if video_result:
-                            # Filter by start_date after extraction.
-                            # YouTube channels return newest first, so once
-                            # we hit an old video, all remaining are older — stop early.
-                            if (
-                                start_date_cutoff
-                                and video_result.published_at
-                                and video_result.published_at < start_date_cutoff
-                            ):
-                                logger.info(
-                                    "Reached video before {cutoff}: {title} ({date}). "
-                                    "Stopping early — remaining videos are older.",
-                                    cutoff=request.start_date,
-                                    title=video_result.title,
-                                    date=video_result.published_at,
-                                )
-                                break
-                            items.append(video_result)
+                        break
+                    logger.info(
+                        "Skipping {title} (before {cutoff})",
+                        title=result.title,
+                        cutoff=request.start_date,
+                    )
+                    continue
 
-                            # Track downloaded files
-                            if (
-                                download_enabled
-                                and output_dir
-                                and "video_file_path" in video_result.metadata
-                            ):
-                                file_path = Path(
-                                    video_result.metadata["video_file_path"]
-                                )
-                                video_id = video_result.metadata.get("source_id", "")
-                                artifact_paths[video_id] = file_path
+                items.append(result)
 
-                    except FetchAuthError as e:
-                        # Some videos may be unavailable (age-restricted, private)
-                        if not first_error:
-                            first_error = e
-                        logger.warning(
-                            "Skipping video {url}: {error}",
-                            url=video_url,
-                            error=e,
-                        )
-                    except FetchEmptyResultError as e:
-                        if not first_error:
-                            first_error = e
-                        logger.warning(
-                            "Video not found {url}: {error}",
-                            url=video_url,
-                            error=e,
-                        )
-                    except FetchError as e:
-                        if not first_error:
-                            first_error = e
-                        logger.warning(
-                            "Error fetching {url}: {error}",
-                            url=video_url,
-                            error=e,
-                        )
-            else:
-                logger.info(
-                    "Single video URL(s): processing {n} URLs", n=len(request.urls)
+                # Track downloaded files
+                if (
+                    download_enabled
+                    and request.output_dir
+                    and "video_file_path" in result.metadata
+                ):
+                    vid_id = result.metadata.get("source_id", "")
+                    artifact_paths[vid_id] = Path(result.metadata["video_file_path"])
+
+            except FetchError as e:
+                logger.warning("Skipping {url}: {error}", url=video_url, error=e)
+            except Exception as e:
+                logger.error(
+                    "Unexpected error for {url}: {error}", url=video_url, error=e
                 )
-                # Single video: extract metadata for each URL
-                for video_url in request.urls:
-                    try:
-                        video_result = self._extract_video_info_and_captions(
-                            video_url,
-                            download=download_enabled,
-                            output_dir=output_dir,
-                            config=effective_config,
-                        )
-                        if video_result:
-                            # Filter by start_date (same as channel path)
-                            if (
-                                start_date_cutoff
-                                and video_result.published_at
-                                and video_result.published_at < start_date_cutoff
-                            ):
-                                logger.info(
-                                    "Skipping {title} (published {date}, before {cutoff})",
-                                    title=video_result.title,
-                                    date=video_result.published_at,
-                                    cutoff=request.start_date,
-                                )
-                                continue
-                            items.append(video_result)
+                raise FetchError(f"Unexpected error: {e}", platform="youtube") from e
 
-                            # Track downloaded file if applicable
-                            if (
-                                download_enabled
-                                and output_dir
-                                and "video_file_path" in video_result.metadata
-                            ):
-                                file_path = Path(
-                                    video_result.metadata["video_file_path"]
-                                )
-                                video_id = video_result.metadata.get("source_id", "")
-                                artifact_paths[video_id] = file_path
-
-                    except FetchAuthError as e:
-                        logger.warning(
-                            "Skipping video {url}: {error}",
-                            url=video_url,
-                            error=e,
-                        )
-                    except FetchEmptyResultError as e:
-                        logger.warning(
-                            "Video not found {url}: {error}",
-                            url=video_url,
-                            error=e,
-                        )
-                    except FetchError as e:
-                        logger.warning(
-                            "Error fetching {url}: {error}",
-                            url=video_url,
-                            error=e,
-                        )
-
-        except FetchError:
-            # Re-raise our domain errors
-            raise
-        except Exception as e:
-            # Log unexpected errors
-            logger.error("Unexpected error in fetch: {error}", error=e)
-            raise FetchError(f"Unexpected error: {str(e)}", platform="youtube") from e
-
-        # Raise FetchEmptyResultError if no items extracted
         if not items:
             raise FetchEmptyResultError(
-                "No content items found for URL(s)",
-                platform="youtube",
+                "No content items found for URL(s)", platform="youtube"
             )
 
-        # Build response with proper content hashes (Phase 6 deduplication)
-        # Hash includes video ID + title + text to prevent false-positive deduplication
+        # Content hashes for deduplication
         content_hashes = {}
         for item in items:
-            video_id = item.metadata.get("source_id", "unknown")
-            hash_input = f"{video_id}:{item.title}:{item.text}"
+            vid_id = item.metadata.get("source_id", "unknown")
+            hash_input = f"{vid_id}:{item.title}:{item.text}"
             content_hashes[item.url or item.title] = hashlib.sha256(
                 hash_input.encode()
             ).hexdigest()

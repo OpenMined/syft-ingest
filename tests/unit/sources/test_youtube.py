@@ -1047,7 +1047,7 @@ def test_fetch_invalid_start_date_raises_fetch_error(mock_ydl_class):
         start_date="bad-date",
     )
 
-    with pytest.raises(FetchError, match="Unexpected error"):
+    with pytest.raises(FetchError, match="Invalid start_date format"):
         fetcher.fetch(request)
 
 
