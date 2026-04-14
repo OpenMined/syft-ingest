@@ -282,10 +282,16 @@ class YtDlpFetcher:
 
         Returns:
             Date in "YYYYMMDD" format, or None if input is None.
+
+        Raises:
+            ValueError: If date_str is not valid YYYY-MM-DD format.
         """
         if date_str is None:
             return None
-        # Strip dashes: "2026-04-01" -> "20260401"
+        from datetime import datetime as dt
+
+        # Validate strict YYYY-MM-DD format
+        dt.strptime(date_str, "%Y-%m-%d")
         return date_str.replace("-", "")
 
     def _is_channel_url(self, url: str) -> bool:

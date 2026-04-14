@@ -90,6 +90,23 @@ corpus = si.gather(
 )
 ```
 
+### Delta fetching with `start_date`
+
+Only fetch content published after a given date. Saves BrightData credits on daily re-scrapes.
+
+```python
+# YouTube: only videos after April 1 (filtered post-extraction via upload_date)
+corpus = si.gather("youtube", ["https://youtube.com/@creator"], start_date="2026-04-01")
+
+# Facebook: only posts after April 1 (filtered server-side by BrightData)
+corpus = await si.async_gather("facebook", ["https://facebook.com/..."], start_date="2026-04-01")
+
+# Instagram: same
+corpus = await si.async_gather("instagram", ["https://instagram.com/..."], start_date="2026-04-01")
+```
+
+Format: `YYYY-MM-DD`. When omitted, all content is fetched (backwards compatible).
+
 ### Concurrent fetching
 
 The async API enables concurrent scraping — total time equals the slowest scrape, not the sum:

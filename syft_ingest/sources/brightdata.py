@@ -129,7 +129,14 @@ class BrightDataFetcher:
         poll_interval = request.config.get("poll_interval", 5)
 
         # Convert start_date from caller format (YYYY-MM-DD) to SDK format (MM-DD-YYYY)
-        sdk_start_date = self._to_sdk_date(request.start_date)
+        try:
+            sdk_start_date = self._to_sdk_date(request.start_date)
+        except ValueError as e:
+            raise FetchError(
+                f"Invalid start_date format: {request.start_date!r}. "
+                f"Expected YYYY-MM-DD: {e}",
+                platform=platform_name,
+            ) from e
 
         logger.info(
             "Fetching {n} URL(s) for {platform}",
