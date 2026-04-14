@@ -141,3 +141,18 @@ def test_fetcher_can_be_called_after_lookup():
         )
     )
     assert result.rows_fetched == 1
+
+
+def test_register_async_fetcher():
+    """Async fetchers can be registered and retrieved."""
+    from syft_ingest.core.fetcher import AsyncContentFetcher, FetchResult
+
+    class _AsyncStubFetcher:
+        async def fetch_async(self, request: FetchRequest) -> FetchResult:
+            return FetchResult(items=[], rows_fetched=0)
+
+    fetcher = _AsyncStubFetcher()
+    register_fetcher(Platform.INSTAGRAM, "test-async", fetcher)
+    retrieved = get_fetcher(Platform.INSTAGRAM, "test-async")
+    assert retrieved is fetcher
+    assert isinstance(retrieved, AsyncContentFetcher)
