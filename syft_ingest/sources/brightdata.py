@@ -78,6 +78,24 @@ class BrightDataFetcher:
                 platform="bright-data",
             )
 
+    @staticmethod
+    def _to_sdk_date(date_str: str | None) -> str | None:
+        """Convert YYYY-MM-DD (caller format) to MM-DD-YYYY (BrightData SDK format).
+
+        Returns None if date_str is None. Raises ValueError if format is wrong.
+        """
+        if date_str is None:
+            return None
+        try:
+            from datetime import datetime as _datetime
+
+            dt = _datetime.strptime(date_str, "%Y-%m-%d")
+            return dt.strftime("%m-%d-%Y")
+        except ValueError:
+            raise ValueError(
+                f"start_date must be in YYYY-MM-DD format, got: {date_str!r}"
+            )
+
     async def fetch_async(self, request: FetchRequest) -> FetchResult:
         """Trigger/poll/fetch lifecycle using the Bright Data SDK.
 
@@ -110,11 +128,20 @@ class BrightDataFetcher:
         timeout = request.config.get("timeout", 180)
         poll_interval = request.config.get("poll_interval", 5)
 
+        # Convert start_date from caller format (YYYY-MM-DD) to SDK format (MM-DD-YYYY)
+        sdk_start_date = self._to_sdk_date(request.start_date)
+
         logger.info(
             "Fetching {n} URL(s) for {platform}",
             n=len(urls),
             platform=platform_name,
         )
+        if sdk_start_date:
+            logger.info(
+                "Filtering {platform} posts from {date} onward",
+                platform=platform_name,
+                date=sdk_start_date,
+            )
 
         # Validate platform (Phase 2 only supports facebook/instagram)
         if platform_name not in ["facebook", "instagram"]:
@@ -143,6 +170,8 @@ class BrightDataFetcher:
                     }
                     if posts_limit:
                         search_kwargs["num_of_posts"] = posts_limit
+                    if sdk_start_date:
+                        search_kwargs["start_date"] = sdk_start_date
                     result = await client.search.instagram.posts(**search_kwargs)
                     raw_data = result.data
                     snapshot_id = result.snapshot_id
@@ -161,6 +190,8 @@ class BrightDataFetcher:
                     trigger_kwargs: dict[str, Any] = {"url": url}
                     if posts_limit:
                         trigger_kwargs["num_of_posts"] = posts_limit
+                    if sdk_start_date:
+                        trigger_kwargs["start_date"] = sdk_start_date
                     job = await trigger_method(**trigger_kwargs)
                     logger.debug("Scrape job created: {job_id}", job_id=job.snapshot_id)
 
@@ -353,6 +384,11 @@ class BrightDataFetcher:
                                 url=post.get("url"),
                                 source_type=SourceType.INSTAGRAM,
                                 published_at=self._parse_date(post.get("datetime")),
+                                metadata={
+                                    "likes": post.get("likes"),
+                                    "comments": post.get("comments"),
+                                    "content_type": post.get("content_type"),
+                                },
                                 raw_data=post,
                             )
                         )
@@ -369,6 +405,12 @@ class BrightDataFetcher:
                             url=entry.get("url") or "",
                             source_type=SourceType.INSTAGRAM,
                             published_at=self._parse_date(entry.get("date_posted")),
+                            metadata={
+                                "likes": entry.get("likes"),
+                                "num_comments": entry.get("num_comments"),
+                                "content_type": entry.get("content_type"),
+                                "photos": entry.get("photos", []),
+                            },
                             raw_data=entry,
                         )
                     )
@@ -402,6 +444,13 @@ class BrightDataFetcher:
                         url=post.get("url") or "",
                         source_type=SourceType.FACEBOOK,
                         published_at=self._parse_date(post.get("date_posted")),
+                        metadata={
+                            "likes": post.get("likes"),
+                            "num_comments": post.get("num_comments"),
+                            "num_shares": post.get("num_shares"),
+                            "post_type": post.get("post_type"),
+                            "video_view_count": post.get("video_view_count"),
+                        },
                         raw_data=post,
                     )
                 )

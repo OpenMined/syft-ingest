@@ -33,6 +33,11 @@ def _build_request(
 
     p = Platform(platform)
 
+    # Extract top-level FetchRequest fields from config kwargs so they are not
+    # silently buried in the opaque config dict.
+    start_date = config.pop("start_date", None)
+    end_date = config.pop("end_date", None)
+
     request_config = dict(config)
     if author:
         request_config["author"] = author
@@ -40,6 +45,8 @@ def _build_request(
     request = FetchRequest(
         platform=p,
         urls=urls,
+        start_date=start_date,
+        end_date=end_date,
         config=request_config,
     )
     fetcher = get_fetcher(p, request.extractor)
