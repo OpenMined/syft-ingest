@@ -979,3 +979,102 @@ def test_download_error_handling(mock_ydl_class):
         # Should be FetchError, not FetchAuthError
         assert isinstance(exc_info.value, FetchError)
         assert not isinstance(exc_info.value, FetchAuthError)
+
+
+# ---- Delta fetching / start_date / dateafter tests ----
+
+
+@patch("yt_dlp.YoutubeDL")
+def test_fetch_channel_with_start_date_filters_old_videos(mock_ydl_class):
+    """Verify fetch() with start_date on a channel URL filters old videos.
+
+    Date filtering happens post-extraction in _fetch_async by comparing
+    each video's published_at against the start_date cutoff.
+    Flat enumeration doesn't have upload dates, so all URLs are enumerated
+    but old videos are filtered after metadata extraction.
+    """
+    mock_ydl_instance = MagicMock()
+    mock_ydl_class.return_value.__enter__ = MagicMock(return_value=mock_ydl_instance)
+    mock_ydl_class.return_value.__exit__ = MagicMock(return_value=None)
+
+    # Call 1: channel enumeration (extract_flat=True) — no dates available
+    # Call 2: metadata for video 1 (new, after cutoff)
+    # Call 3: metadata for video 2 (old, before cutoff)
+    mock_ydl_instance.extract_info.side_effect = [
+        {
+            "entries": [
+                {"url": "https://youtube.com/watch?v=new", "id": "new"},
+                {"url": "https://youtube.com/watch?v=old", "id": "old"},
+            ]
+        },
+        {
+            "title": "New Video",
+            "id": "new",
+            "uploader": "Creator",
+            "description": "A new video",
+            "upload_date": "20260408",
+        },
+        {
+            "title": "Old Video",
+            "id": "old",
+            "uploader": "Creator",
+            "description": "An old video",
+            "upload_date": "20180621",
+        },
+    ]
+
+    fetcher = YtDlpFetcher()
+    request = FetchRequest(
+        platform=Platform.YOUTUBE,
+        urls=["https://youtube.com/@creator"],
+        start_date="2026-04-01",
+    )
+
+    result = fetcher.fetch(request)
+
+    # Only the new video should pass the date filter
+    assert len(result.items) == 1
+    assert result.items[0].title == "New Video"
+
+
+@patch("yt_dlp.YoutubeDL")
+def test_fetch_invalid_start_date_raises_fetch_error(mock_ydl_class):
+    """Invalid start_date format raises FetchError, not raw ValueError."""
+    fetcher = YtDlpFetcher()
+    request = FetchRequest(
+        platform=Platform.YOUTUBE,
+        urls=["https://youtube.com/watch?v=test"],
+        start_date="bad-date",
+    )
+
+    with pytest.raises(FetchError, match="Invalid start_date format"):
+        fetcher.fetch(request)
+
+
+@patch("yt_dlp.YoutubeDL")
+def test_fetch_video_without_published_at_passes_filter(mock_ydl_class):
+    """Video with no published_at should pass through the date filter."""
+    mock_ydl_instance = MagicMock()
+    mock_ydl_class.return_value.__enter__ = MagicMock(return_value=mock_ydl_instance)
+    mock_ydl_class.return_value.__exit__ = MagicMock(return_value=None)
+
+    mock_ydl_instance.extract_info.return_value = {
+        "title": "No Date Video",
+        "id": "nodate",
+        "uploader": "Creator",
+        "description": "A video with no upload date",
+        # No upload_date field
+    }
+
+    fetcher = YtDlpFetcher()
+    request = FetchRequest(
+        platform=Platform.YOUTUBE,
+        urls=["https://youtube.com/watch?v=nodate"],
+        start_date="2026-04-01",
+    )
+
+    result = fetcher.fetch(request)
+
+    # Should still be included (no date = can't filter, so keep it)
+    assert len(result.items) == 1
+    assert result.items[0].title == "No Date Video"
