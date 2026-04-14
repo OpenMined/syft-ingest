@@ -160,20 +160,22 @@ class YtDlpFetcher:
                             config=effective_config,
                         )
                         if video_result:
-                            # Filter by start_date after extraction
-                            # (flat enumeration doesn't have dates)
+                            # Filter by start_date after extraction.
+                            # YouTube channels return newest first, so once
+                            # we hit an old video, all remaining are older — stop early.
                             if (
                                 start_date_cutoff
                                 and video_result.published_at
                                 and video_result.published_at < start_date_cutoff
                             ):
-                                logger.debug(
-                                    "Skipping {title} (published {date}, before {cutoff})",
+                                logger.info(
+                                    "Reached video before {cutoff}: {title} ({date}). "
+                                    "Stopping early — remaining videos are older.",
+                                    cutoff=request.start_date,
                                     title=video_result.title,
                                     date=video_result.published_at,
-                                    cutoff=request.start_date,
                                 )
-                                continue
+                                break
                             items.append(video_result)
 
                             # Track downloaded files
