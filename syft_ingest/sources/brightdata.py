@@ -154,10 +154,10 @@ class BrightDataFetcher:
                     platform=platform_name,
                     url=url,
                 )
-                # Pass server-side post limit if configured (saves API cost/time)
+                # Pass server-side post limit for post-based scrapers (not profiles)
                 trigger_kwargs: dict[str, Any] = {"url": url}
                 posts_limit = request.config.get("posts_limit")
-                if posts_limit:
+                if posts_limit and platform_name != "instagram":
                     trigger_kwargs["num_of_posts"] = posts_limit
                 job = await trigger_method(**trigger_kwargs)
                 logger.debug("Scrape job created: {job_id}", job_id=job.snapshot_id)
