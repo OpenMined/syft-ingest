@@ -239,7 +239,11 @@ async def run_fetcher_async(fetcher: Fetcher, request: FetchRequest) -> FetchRes
     """
     if isinstance(fetcher, AsyncContentFetcher):
         return await fetcher.fetch_async(request)
-    return await asyncio.to_thread(fetcher.fetch, request)
+    if isinstance(fetcher, ContentFetcher):
+        return await asyncio.to_thread(fetcher.fetch, request)
+    raise TypeError(
+        f"{type(fetcher).__name__} implements neither ContentFetcher nor AsyncContentFetcher"
+    )
 
 
 def run_fetcher_sync(fetcher: Fetcher, request: FetchRequest) -> FetchResult:
