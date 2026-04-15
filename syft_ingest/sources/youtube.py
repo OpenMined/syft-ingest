@@ -296,14 +296,30 @@ class YtDlpFetcher:
                     platform="youtube",
                 )
 
-            video_urls = []
+            video_urls: list[str] = []
+
+            def _collect_video_url(entry: dict) -> None:
+                if entry.get("url"):
+                    video_urls.append(entry["url"])
+                elif entry.get("id"):
+                    video_urls.append(f"https://www.youtube.com/watch?v={entry['id']}")
+
             for entry in info["entries"]:
                 if not entry:
                     continue
-                if "url" in entry:
-                    video_urls.append(entry["url"])
-                elif "id" in entry:
-                    video_urls.append(f"https://www.youtube.com/watch?v={entry['id']}")
+                # Nested playlists: @handle URLs return channel tabs
+                # (Videos, Live, etc.) as sub-playlists with their own entries
+                if entry.get("_type") == "playlist" and entry.get("entries"):
+                    for sub_entry in entry["entries"]:
+                        if not sub_entry:
+                            continue
+                        _collect_video_url(sub_entry)
+                        if len(video_urls) >= limit:
+                            break
+                else:
+                    _collect_video_url(entry)
+                if len(video_urls) >= limit:
+                    break
 
             logger.info(
                 "Enumerated {n} videos from channel",
