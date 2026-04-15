@@ -37,6 +37,7 @@ def _build_request(
     # silently buried in the opaque config dict.
     start_date = config.pop("start_date", None)
     end_date = config.pop("end_date", None)
+    progress_callback = config.pop("progress_callback", None)
 
     request_config = dict(config)
     if author:
@@ -47,6 +48,7 @@ def _build_request(
         urls=urls,
         start_date=start_date,
         end_date=end_date,
+        progress_callback=progress_callback,
         config=request_config,
     )
     fetcher = get_fetcher(p, request.extractor)

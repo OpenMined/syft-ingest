@@ -113,6 +113,11 @@ class FetchRequest(BaseModel):
     start_date: str | None = None
     end_date: str | None = None
     output_dir: Path | None = None
+    progress_callback: Any | None = Field(
+        default=None,
+        exclude=True,
+        description="Optional callable(items_count: int) called after each item is fetched",
+    )
     config: FetchConfig | dict[str, Any] = Field(
         default_factory=dict,
         description="Fetcher-specific options (validated via FetchConfig, converted to dict)",

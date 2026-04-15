@@ -185,6 +185,12 @@ class YtDlpFetcher:
 
                 items.append(result)
 
+                if request.progress_callback:
+                    try:
+                        request.progress_callback(len(items))
+                    except Exception:
+                        pass  # never let callback failures affect fetching
+
                 # Track downloaded files
                 if (
                     download_enabled

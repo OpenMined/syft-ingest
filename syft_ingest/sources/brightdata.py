@@ -255,6 +255,12 @@ class BrightDataFetcher:
                         platform=platform_name,
                     )
 
+                if request.progress_callback:
+                    try:
+                        request.progress_callback(len(items))
+                    except Exception:
+                        pass  # never let callback failures affect fetching
+
                 fetched_at = datetime.now(UTC)
                 content_hashes = {
                     item.url or item.title: hashlib.sha256(
