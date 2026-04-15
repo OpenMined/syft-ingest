@@ -91,7 +91,7 @@ jobs:
     - name: Push changes and tags
       if: ${{ !inputs.skip_publish }}
       run: |
-        git add .
+        git add pyproject.toml syft_ingest/__init__.py uv.lock
         git commit --amend --no-edit || true
         git push origin main
         git push origin --tags
@@ -99,13 +99,14 @@ jobs:
     - name: Upload to PyPI
       if: ${{ !inputs.skip_publish }}
       env:
-        OM_PYPI_TOKEN: ${{ secrets.OM_PYPI_TOKEN }}
+        TWINE_USERNAME: __token__
+        TWINE_PASSWORD: ${{ secrets.OM_PYPI_TOKEN }}
       run: |
-        if [ -z "$OM_PYPI_TOKEN" ]; then
+        if [ -z "$TWINE_PASSWORD" ]; then
           echo "Error: OM_PYPI_TOKEN secret not set"
           exit 1
         fi
-        uvx twine upload dist/* --username __token__ --password "$OM_PYPI_TOKEN"
+        uvx twine upload dist/*
 
     - name: Create GitHub Release
       if: ${{ !inputs.skip_publish }}
