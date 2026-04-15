@@ -19,7 +19,7 @@ Use `skip_publish: true` for a dry run that builds but doesn't push or upload.
 
 ```bash
 just show-version      # current version
-just bump patch        # bump version (patch/minor/major) — commits + tags
+just bump PATCH        # bump version (PATCH/MINOR/MAJOR) — commits + tags
 just build             # build wheel into dist/
 just test              # run tests
 ```

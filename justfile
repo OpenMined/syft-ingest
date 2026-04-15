@@ -21,9 +21,9 @@ test-nb *args:
 show-version:
     @grep '^version = ' pyproject.toml | sed 's/version = "\(.*\)"/\1/'
 
-# Bump version (patch, minor, major)
-bump type="patch":
-    uv run cz bump --{{type}} --yes
+# Bump version (PATCH, MINOR, MAJOR)
+bump type="PATCH":
+    uv run cz bump --increment {{type}} --yes
     uv lock
     git add uv.lock
     git commit --amend --no-edit

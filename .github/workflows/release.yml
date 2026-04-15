@@ -68,7 +68,8 @@ jobs:
     - name: Bump version
       id: version_bump
       run: |
-        just bump ${{ inputs.bump_type }}
+        BUMP_TYPE=$(echo "${{ inputs.bump_type }}" | tr '[:lower:]' '[:upper:]')
+        just bump "$BUMP_TYPE"
         NEW_VERSION=$(grep '^version = ' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
         echo "version=v${NEW_VERSION}" >> $GITHUB_OUTPUT
         echo "New version: v${NEW_VERSION}"
