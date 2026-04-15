@@ -1,3 +1,5 @@
+__version__ = "0.1.0"
+
 from syft_ingest.core.fetcher import (
     AsyncContentFetcher,
     ContentFetcher,

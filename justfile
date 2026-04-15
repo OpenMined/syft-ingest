@@ -17,6 +17,22 @@ test *args:
 test-nb *args:
     uv run pytest --nbmake notebooks/ -x {{args}}
 
+# Show current version
+show-version:
+    @grep '^version = ' pyproject.toml | sed 's/version = "\(.*\)"/\1/'
+
+# Bump version (patch, minor, major)
+bump type="patch":
+    uv run cz bump --{{type}} --yes
+    uv lock
+    git add uv.lock
+    git commit --amend --no-edit
+
+# Build wheel
+build:
+    rm -rf dist
+    uv build
+
 # Remove caches
 clean:
     @echo -e "{{_red}}Cleaning caches…{{_nc}}"

@@ -1,0 +1,131 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump_type:
+        description: 'Version bump type'
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+      skip_publish:
+        description: 'Skip PyPI publish (for testing)'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  release:
+    name: Release syft-ingest
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        ref: main
+        fetch-depth: 0
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v3
+      with:
+        enable-cache: true
+
+    - name: Setup git config
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        git config user.email "${GITHUB_ACTOR_ID}+${GITHUB_ACTOR}@users.noreply.github.com"
+        git config user.name "$(gh api /users/${GITHUB_ACTOR} | jq .name -r)"
+
+    - name: Pull latest tags
+      run: git fetch --tags
+
+    - name: Install just
+      run: |
+        curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh | bash -s -- --to /usr/local/bin
+        just --version
+
+    - name: Install dependencies
+      run: |
+        uv sync
+        uv run cz version
+
+    - name: Run tests
+      run: just test
+
+    - name: Bump version
+      id: version_bump
+      run: |
+        just bump ${{ inputs.bump_type }}
+        NEW_VERSION=$(grep '^version = ' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
+        echo "version=v${NEW_VERSION}" >> $GITHUB_OUTPUT
+        echo "New version: v${NEW_VERSION}"
+
+    - name: Build package
+      run: just build
+
+    - name: Test built package
+      run: |
+        EXPECTED_VERSION=$(grep '^version = ' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
+        WHEEL_FILE=$(ls dist/syft_ingest-${EXPECTED_VERSION}*.whl | head -n1)
+        ACTUAL_VERSION=$(uv run --with "$WHEEL_FILE" --no-project -- python -c "import syft_ingest; print(syft_ingest.__version__)")
+        if [ "$ACTUAL_VERSION" != "$EXPECTED_VERSION" ]; then
+          echo "Version mismatch: expected $EXPECTED_VERSION, got $ACTUAL_VERSION"
+          exit 1
+        fi
+        echo "Package version $ACTUAL_VERSION verified."
+
+    - name: Push changes and tags
+      if: ${{ !inputs.skip_publish }}
+      run: |
+        git add .
+        git commit --amend --no-edit || true
+        git push origin main
+        git push origin --tags
+
+    - name: Upload to PyPI
+      if: ${{ !inputs.skip_publish }}
+      env:
+        OM_PYPI_TOKEN: ${{ secrets.OM_PYPI_TOKEN }}
+      run: |
+        if [ -z "$OM_PYPI_TOKEN" ]; then
+          echo "Error: OM_PYPI_TOKEN secret not set"
+          exit 1
+        fi
+        uvx twine upload dist/* --username __token__ --password "$OM_PYPI_TOKEN"
+
+    - name: Create GitHub Release
+      if: ${{ !inputs.skip_publish }}
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        VERSION="${{ steps.version_bump.outputs.version }}"
+        PREV_TAG=$(git tag -l "v*" --sort=-v:refname | head -n2 | tail -n1)
+        if [ -z "$PREV_TAG" ]; then
+          RELEASE_NOTES="Initial release of syft-ingest $VERSION"
+        else
+          RELEASE_NOTES=$(git log --pretty=format:"- %s" $PREV_TAG..HEAD)
+        fi
+        gh release create "$VERSION" \
+          --title "syft-ingest $VERSION" \
+          --notes "$RELEASE_NOTES" \
+          --target "main" \
+          dist/*
+
+    - name: Test mode summary
+      if: ${{ inputs.skip_publish }}
+      run: |
+        echo "Skipped publish (test mode). Built packages:"
+        ls -la dist/
