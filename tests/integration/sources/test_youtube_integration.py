@@ -271,9 +271,9 @@ def test_end_to_end_with_custom_timeout(sample_video_info):
         )
 
 
-def test_end_to_end_with_custom_playlistend(sample_channel_info, sample_video_info):
-    """Custom playlistend config is honored for channel enumeration."""
-    fetcher = YtDlpFetcher(config={"playlistend": 10})
+def test_end_to_end_with_custom_num_of_posts(sample_channel_info, sample_video_info):
+    """Custom num_of_posts config is honored for channel enumeration."""
+    fetcher = YtDlpFetcher(config={"num_of_posts": 10})
     request = FetchRequest(
         platform=Platform.YOUTUBE,
         extractor="yt-dlp",
@@ -292,7 +292,7 @@ def test_end_to_end_with_custom_playlistend(sample_channel_info, sample_video_in
 
         fetcher.fetch(request)
 
-        # First call should be with playlistend=10 (during enumeration)
+        # First call should be with playlistend=10 (yt-dlp's own option, during enumeration)
         first_call_opts = mock_ydl_class.call_args_list[0][0][0]
         assert first_call_opts["playlistend"] == 10
 

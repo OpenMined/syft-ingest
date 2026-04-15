@@ -39,7 +39,7 @@ def test_init_with_default_config():
     """Verify YtDlpFetcher initializes with default config."""
     fetcher = YtDlpFetcher()
     assert fetcher._config["socket_timeout"] == 30
-    assert fetcher._config["playlistend"] == 50
+    assert fetcher._config["num_of_posts"] == 50
     assert fetcher._config["download_full_video"] is False
 
 
@@ -48,7 +48,7 @@ def test_init_with_custom_config():
     custom_config = {"socket_timeout": 5}
     fetcher = YtDlpFetcher(config=custom_config)
     assert fetcher._config["socket_timeout"] == 5
-    assert fetcher._config["playlistend"] == 50  # default still present
+    assert fetcher._config["num_of_posts"] == 50  # default still present
 
 
 # ---- Metadata extraction tests ----
@@ -679,10 +679,10 @@ def test_enumerate_channel_videos(mock_ydl_class):
 
 
 @patch("yt_dlp.YoutubeDL")
-def test_playlistend_config_respected(mock_ydl_class):
-    """Verify playlistend config is passed to yt-dlp during enumeration.
+def test_num_of_posts_config_respected(mock_ydl_class):
+    """Verify num_of_posts config is passed to yt-dlp during enumeration.
 
-    Tests that custom playlistend config value (10) is used
+    Tests that custom num_of_posts config value (10) is used
     when enumerating channel videos.
     """
     mock_ydl_instance = MagicMock()
@@ -691,10 +691,10 @@ def test_playlistend_config_respected(mock_ydl_class):
 
     mock_ydl_instance.extract_info.return_value = {"entries": []}
 
-    fetcher = YtDlpFetcher(config={"playlistend": 10})
+    fetcher = YtDlpFetcher(config={"num_of_posts": 10})
     fetcher._enumerate_channel("https://youtube.com/channel/UCXXX", limit=10)
 
-    # Verify playlistend=10 was passed to YoutubeDL
+    # Verify playlistend=10 was passed to YoutubeDL (yt-dlp's own option name)
     call_args = mock_ydl_class.call_args
     ydl_opts = call_args[0][0]
     assert ydl_opts["playlistend"] == 10

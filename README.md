@@ -60,7 +60,7 @@ Both return a `Corpus` object. Pass platform-specific config as keyword argument
 corpus = si.gather(
     "youtube",
     ["https://www.youtube.com/@iamtrask"],
-    playlistend=5,
+    num_of_posts=5,
     socket_timeout=60,
 )
 
@@ -69,7 +69,7 @@ corpus = await si.async_gather(
     "facebook",
     ["https://www.facebook.com/profile.php?id=61583734012155"],
     author="Andrew Trask",
-    posts_limit=10,
+    num_of_posts=10,
     timeout=300,
 )
 
@@ -78,7 +78,7 @@ corpus = await si.async_gather(
     "instagram",
     ["https://www.instagram.com/iamtrask/"],
     author="Andrew Trask",
-    posts_limit=5,
+    num_of_posts=5,
     timeout=300,
 )
 
@@ -115,9 +115,9 @@ The async API enables concurrent scraping — total time equals the slowest scra
 import asyncio
 
 corpus_yt, corpus_fb, corpus_ig = await asyncio.gather(
-    si.async_gather("youtube", ["https://www.youtube.com/@iamtrask"], playlistend=3),
-    si.async_gather("facebook", ["https://facebook.com/..."], posts_limit=5, timeout=300),
-    si.async_gather("instagram", ["https://instagram.com/..."], posts_limit=5, timeout=300),
+    si.async_gather("youtube", ["https://www.youtube.com/@iamtrask"], num_of_posts=3),
+    si.async_gather("facebook", ["https://facebook.com/..."], num_of_posts=5, timeout=300),
+    si.async_gather("instagram", ["https://instagram.com/..."], num_of_posts=5, timeout=300),
 )
 ```
 
@@ -192,11 +192,10 @@ ContentFetcher (sync)          AsyncContentFetcher (async)
 | Option | Platform | Description |
 |---|---|---|
 | `socket_timeout` | YouTube | Network timeout in seconds (default: 30) |
-| `playlistend` | YouTube | Max videos from channel/playlist (default: 50) |
+| `num_of_posts` | All | Max posts/videos to fetch (default: 50 for YouTube, no limit for FB/IG) |
 | `download_full_video` | YouTube | Enable full video download (default: false) |
 | `timeout` | Facebook/Instagram | Scrape job timeout in seconds (default: 180) |
 | `poll_interval` | Facebook | Job status check interval in seconds (default: 5) |
-| `posts_limit` | Facebook/Instagram | Limit posts fetched, server-side for FB/IG (default: no limit) |
 
 ## Tests
 

@@ -128,12 +128,21 @@ class BrightDataFetcher:
         timeout = request.config.get("timeout", 180)
         poll_interval = request.config.get("poll_interval", 5)
 
-        # Convert start_date from caller format (YYYY-MM-DD) to SDK format (MM-DD-YYYY)
+        # Convert start_date / end_date from caller format (YYYY-MM-DD) to SDK format (MM-DD-YYYY)
         try:
             sdk_start_date = self._to_sdk_date(request.start_date)
         except ValueError as e:
             raise FetchError(
                 f"Invalid start_date format: {request.start_date!r}. "
+                f"Expected YYYY-MM-DD: {e}",
+                platform=platform_name,
+            ) from e
+
+        try:
+            sdk_end_date = self._to_sdk_date(request.end_date)
+        except ValueError as e:
+            raise FetchError(
+                f"Invalid end_date format: {request.end_date!r}. "
                 f"Expected YYYY-MM-DD: {e}",
                 platform=platform_name,
             ) from e
@@ -149,6 +158,12 @@ class BrightDataFetcher:
                 platform=platform_name,
                 date=sdk_start_date,
             )
+        if sdk_end_date:
+            logger.info(
+                "Filtering {platform} posts until {date}",
+                platform=platform_name,
+                date=sdk_end_date,
+            )
 
         # Validate platform (Phase 2 only supports facebook/instagram)
         if platform_name not in ["facebook", "instagram"]:
@@ -163,7 +178,7 @@ class BrightDataFetcher:
         try:
             async with BrightDataClient(token=self._token) as client:
                 url = urls[0]
-                posts_limit = request.config.get("posts_limit")
+                num_of_posts = request.config.get("num_of_posts")
 
                 if platform_name == "instagram":
                     # Instagram: use search scraper (supports num_of_posts server-side)
@@ -175,10 +190,12 @@ class BrightDataFetcher:
                         "url": url,
                         "timeout": timeout,
                     }
-                    if posts_limit:
-                        search_kwargs["num_of_posts"] = posts_limit
+                    if num_of_posts:
+                        search_kwargs["num_of_posts"] = num_of_posts
                     if sdk_start_date:
                         search_kwargs["start_date"] = sdk_start_date
+                    if sdk_end_date:
+                        search_kwargs["end_date"] = sdk_end_date
                     result = await client.search.instagram.posts(**search_kwargs)
                     raw_data = result.data
                     snapshot_id = result.snapshot_id
@@ -195,10 +212,12 @@ class BrightDataFetcher:
                         url=url,
                     )
                     trigger_kwargs: dict[str, Any] = {"url": url}
-                    if posts_limit:
-                        trigger_kwargs["num_of_posts"] = posts_limit
+                    if num_of_posts:
+                        trigger_kwargs["num_of_posts"] = num_of_posts
                     if sdk_start_date:
                         trigger_kwargs["start_date"] = sdk_start_date
+                    if sdk_end_date:
+                        trigger_kwargs["end_date"] = sdk_end_date
                     job = await trigger_method(**trigger_kwargs)
                     logger.debug("Scrape job created: {job_id}", job_id=job.snapshot_id)
 
@@ -316,7 +335,7 @@ class BrightDataFetcher:
         Args:
             raw_data: Raw response from Bright Data API (dict-like).
             platform: Platform name ("instagram" or "facebook").
-            config: Optional config dict with `posts_limit` for testing.
+            config: Optional config dict with `num_of_posts` for testing.
 
         Returns:
             List of ContentItem instances with raw BrightData data in metadata.
@@ -338,14 +357,14 @@ class BrightDataFetcher:
         except Exception as e:
             logger.error("Error parsing {} response: {}", platform, e, exc_info=True)
 
-        # Apply posts_limit if configured (for testing/sampling)
-        posts_limit = config.get("posts_limit")
-        if posts_limit and posts_limit > 0:
-            items = items[:posts_limit]
+        # Apply num_of_posts if configured (for testing/sampling)
+        num_of_posts = config.get("num_of_posts")
+        if num_of_posts and num_of_posts > 0:
+            items = items[:num_of_posts]
             logger.info(
-                "Limited {platform} items to {limit} (posts_limit config)",
+                "Limited {platform} items to {limit} (num_of_posts config)",
                 platform=platform,
-                limit=posts_limit,
+                limit=num_of_posts,
             )
 
         logger.info(

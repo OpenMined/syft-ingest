@@ -35,21 +35,21 @@ class FetchConfig(BaseModel):
 
     YouTube (yt-dlp):
         socket_timeout: Network timeout in seconds (default: 30)
-        playlistend: Max videos from channel/playlist (default: 50)
+        num_of_posts: Max videos from channel/playlist (default: 50)
         download_full_video: Enable full video download (default: false)
 
     Instagram/Facebook (BrightData):
         timeout: Total scrape job timeout in seconds (default: 180)
         poll_interval: Check job completion every N seconds (default: 5)
-        posts_limit: Limit posts fetched for testing (default: no limit)
+        num_of_posts: Limit posts fetched (default: no limit)
     """
 
     # YouTube options
     socket_timeout: int | None = Field(
         default=None, ge=1, description="Network timeout in seconds"
     )
-    playlistend: int | None = Field(
-        default=None, ge=1, description="Max videos from channel/playlist"
+    num_of_posts: int | None = Field(
+        default=None, ge=1, description="Max posts/videos to fetch"
     )
     download_full_video: bool = Field(
         default=False, description="Enable full video download"
@@ -61,9 +61,6 @@ class FetchConfig(BaseModel):
     )
     poll_interval: int | None = Field(
         default=None, ge=1, description="Job status check interval in seconds"
-    )
-    posts_limit: int | None = Field(
-        default=None, ge=1, description="Limit posts fetched (for testing)"
     )
 
     model_config = ConfigDict(
@@ -94,14 +91,14 @@ class FetchRequest(BaseModel):
         FetchRequest(
             platform="youtube",
             urls=["https://www.youtube.com/@user"],
-            config={"playlistend": 10, "socket_timeout": 60}
+            config={"num_of_posts": 10, "socket_timeout": 60}
         )
 
         # Instagram with post limit for testing
         FetchRequest(
             platform="instagram",
             urls=["https://www.instagram.com/user/"],
-            config={"posts_limit": 5}
+            config={"num_of_posts": 5}
         )
     """
 

@@ -36,7 +36,7 @@ from syft_ingest.core.models import SourceType, VideoResult
 
 # Constants
 DEFAULT_SOCKET_TIMEOUT = 30
-DEFAULT_PLAYLIST_LIMIT = 50
+DEFAULT_NUM_OF_POSTS = 50
 
 # Import yt-dlp
 try:
@@ -58,7 +58,7 @@ class YtDlpFetcher:
     Async callers should use asyncio.to_thread(fetcher.fetch, request).
 
     Attributes:
-        _config: Configuration dict with socket_timeout, playlistend, download_full_video.
+        _config: Configuration dict with socket_timeout, num_of_posts, download_full_video.
     """
 
     def __init__(self, config: dict[str, Any] | None = None):
@@ -71,7 +71,7 @@ class YtDlpFetcher:
         # Default config
         defaults = {
             "socket_timeout": DEFAULT_SOCKET_TIMEOUT,
-            "playlistend": DEFAULT_PLAYLIST_LIMIT,
+            "num_of_posts": DEFAULT_NUM_OF_POSTS,
             "download_full_video": False,
         }
 
@@ -94,7 +94,7 @@ class YtDlpFetcher:
         effective_config = {**self._config, **request.config}
         download_enabled = effective_config.get("download_full_video", False)
 
-        # Parse start_date cutoff for post-extraction filtering
+        # Parse start_date / end_date cutoffs for post-extraction filtering
         start_date_cutoff = None
         if request.start_date:
             try:
@@ -108,13 +108,26 @@ class YtDlpFetcher:
                     platform="youtube",
                 ) from e
 
+        end_date_cutoff = None
+        if request.end_date:
+            try:
+                end_date_cutoff = datetime.strptime(
+                    request.end_date, "%Y-%m-%d"
+                ).replace(tzinfo=UTC)
+            except ValueError as e:
+                raise FetchError(
+                    f"Invalid end_date format: {request.end_date!r}. "
+                    f"Expected YYYY-MM-DD: {e}",
+                    platform="youtube",
+                ) from e
+
         # Resolve video URLs — either enumerate channel or use provided URLs
         first_url = request.urls[0]
         if self._is_channel_url(first_url):
             logger.info("Detected channel/playlist URL: {url}", url=first_url)
             video_urls = self._enumerate_channel(
                 first_url,
-                limit=effective_config.get("playlistend", DEFAULT_PLAYLIST_LIMIT),
+                limit=effective_config.get("num_of_posts", DEFAULT_NUM_OF_POSTS),
                 config=effective_config,
             )
             logger.info("Enumerated {n} videos from channel", n=len(video_urls))
@@ -138,7 +151,7 @@ class YtDlpFetcher:
                 if not result:
                     continue
 
-                # Date filter
+                # Date filters
                 if (
                     start_date_cutoff
                     and result.published_at
@@ -155,6 +168,18 @@ class YtDlpFetcher:
                         "Skipping {title} (before {cutoff})",
                         title=result.title,
                         cutoff=request.start_date,
+                    )
+                    continue
+
+                if (
+                    end_date_cutoff
+                    and result.published_at
+                    and result.published_at > end_date_cutoff
+                ):
+                    logger.info(
+                        "Skipping {title} (after {cutoff})",
+                        title=result.title,
+                        cutoff=request.end_date,
                     )
                     continue
 
@@ -221,19 +246,19 @@ class YtDlpFetcher:
     def _enumerate_channel(
         self,
         channel_url: str,
-        limit: int = DEFAULT_PLAYLIST_LIMIT,
+        limit: int = DEFAULT_NUM_OF_POSTS,
         config: dict | None = None,
     ) -> list[str]:
         """Enumerate video URLs from a channel/playlist using extract_flat.
 
         Uses yt-dlp's extract_flat=True for fast enumeration without downloading.
-        Respects playlistend config for limiting results.
+        Respects num_of_posts config for limiting results.
         Note: Date filtering happens post-extraction in _fetch_async since
         flat enumeration doesn't include upload dates.
 
         Args:
             channel_url: YouTube channel or playlist URL
-            limit: Max videos to enumerate (default DEFAULT_PLAYLIST_LIMIT)
+            limit: Max videos to enumerate (default DEFAULT_NUM_OF_POSTS)
             config: Optional config dict (uses self._config if not provided)
 
         Returns:
