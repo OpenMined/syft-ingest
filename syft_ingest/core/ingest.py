@@ -381,16 +381,19 @@ def _enrich_text(doc: _Doc) -> str:
     return f"{header}{desc_line}\n\n{doc.text}"
 
 
-def to_rag(docs: list[_Doc], chunking: ChunkingSpec) -> list[_Doc]:
+def to_rag(docs: list[_Doc], chunking: ChunkingSpec | None) -> list[_Doc]:
     """Chunk documents for RAG ingestion.
 
     This is the single place where chunking happens, per architecture rule:
     'to_rag() chunks. export() does NOT chunk.'
+
+    When ``chunking`` is ``None``, chunking is disabled and each input document
+    is emitted as a single RAG document.
     """
     chunked: list[_Doc] = []
     for doc in docs:
         enriched = _enrich_text(doc)
-        chunks = _chunk_text(enriched, chunking)
+        chunks = [enriched] if chunking is None else _chunk_text(enriched, chunking)
         raw_hash = hashlib.sha256(doc.text.encode("utf-8")).hexdigest()
         source_id = doc.payload.get("url") or doc.payload.get("title") or "doc"
         stable_doc_key = f"{source_id}::{doc.payload.get('source', '')}::{raw_hash}"
@@ -554,7 +557,7 @@ def _ingest_docs(
     *,
     destination: QdrantDestination,
     embedding: EmbeddingSpec,
-    chunking: ChunkingSpec,
+    chunking: ChunkingSpec | None,
 ) -> IngestReport:
     if not docs:
         raise NoDocumentsError("No documents available for ingestion")
@@ -633,7 +636,7 @@ def ingest_jsonl(
         _iter_docs_from_jsonl(manifest_jsonl),
         destination=destination,
         embedding=embedding or EmbeddingSpec(),
-        chunking=chunking or ChunkingSpec(),
+        chunking=chunking,
     )
 
 
@@ -648,5 +651,5 @@ def ingest_corpus(
         _iter_docs_from_corpus(corpus),
         destination=destination,
         embedding=embedding or EmbeddingSpec(),
-        chunking=chunking or ChunkingSpec(),
+        chunking=chunking,
     )

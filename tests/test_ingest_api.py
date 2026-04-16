@@ -153,6 +153,35 @@ def test_ingest_jsonl_upserts_points(tmp_path, patch_ingest_runtime):
     assert report.embedding_contract["embedding_backend"] == "fastembed"
 
 
+def test_ingest_jsonl_defaults_to_no_chunking(tmp_path, patch_ingest_runtime):
+    manifest = tmp_path / "manifest.jsonl"
+    manifest.write_text(
+        json.dumps(
+            {
+                "title": "Long post",
+                "author": "Katy Stevens",
+                "url": "https://www.instagram.com/p/long123/",
+                "text": "word " * 600,
+                "site": "instagram.com",
+                "source_type": "social_media_post",
+                "metadata": {"platform": "instagram", "extractor": "brightdata"},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    report = ingest_jsonl(
+        manifest,
+        destination=QdrantDestination(collection_name="katy-stevens-default"),
+        embedding=EmbeddingSpec(),
+    )
+
+    assert report.documents_total == 1
+    assert report.chunks_total == 1
+    assert len(report.point_ids) == 1
+
+
 def test_ingest_corpus_supports_source_spec_metadata(tmp_path, patch_ingest_runtime):
     brightdata_dir = tmp_path / "brightdata-ig"
     brightdata_dir.mkdir(parents=True, exist_ok=True)

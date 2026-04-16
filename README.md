@@ -137,6 +137,23 @@ report = syft_ingest.ingest_jsonl(
         backend="fastembed",
         model="BAAI/bge-small-en-v1.5",
     ),
+)
+```
+
+By default, `ingest_jsonl(...)` does not chunk documents. Each input record is
+ingested as a single vector point unless you explicitly opt into chunking:
+
+```python
+report = syft_ingest.ingest_jsonl(
+    "./output/creator_social_posts.jsonl",
+    destination=syft_ingest.QdrantDestination(
+        collection_name="katy-stevens",
+        url="http://127.0.0.1:6333",
+    ),
+    embedding=syft_ingest.EmbeddingSpec(
+        backend="fastembed",
+        model="BAAI/bge-small-en-v1.5",
+    ),
     chunking=syft_ingest.ChunkingSpec(
         chunk_size=1000,
         chunk_overlap=250,

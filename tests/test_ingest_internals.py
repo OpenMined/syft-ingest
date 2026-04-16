@@ -217,6 +217,22 @@ def test_chunk_text_empty_returns_empty():
     assert _chunk_text("", spec) == []
 
 
+def test_to_rag_without_chunking_emits_single_doc():
+    doc = _Doc(
+        text="Hello world, this is a test document with enough text.",
+        payload={"url": "https://example.com/page1", "source": "test"},
+    )
+
+    result = to_rag([doc], None)
+
+    assert len(result) == 1
+    payload = result[0].payload
+    assert payload["chunk_index"] == 0
+    assert payload["chunk_count"] == 1
+    assert payload["raw_text"] == doc.text
+    assert result[0].text
+
+
 # ---------------------------------------------------------------------------
 # 7. test_gather_unsupported_source_spec_kind
 # ---------------------------------------------------------------------------
