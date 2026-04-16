@@ -290,6 +290,7 @@ class YtDlpFetcher:
                 "quiet": True,
                 "no_warnings": True,
                 "playlistend": limit,
+                "remote_components": ["ejs:github"],
             }
 
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -401,6 +402,7 @@ class YtDlpFetcher:
                 "extractor_args": {
                     "youtube": {"player_client": ["android", "web"]},
                 },
+                "remote_components": ["ejs:github"],
             }
 
             # NOTE: dateafter doesn't work with download=False.
@@ -660,6 +662,7 @@ class YtDlpFetcher:
                 "quiet": True,
                 "no_warnings": True,
                 "outtmpl": str(output_dir / "%(id)s.%(ext)s"),
+                "remote_components": ["ejs:github"],
             }
 
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
