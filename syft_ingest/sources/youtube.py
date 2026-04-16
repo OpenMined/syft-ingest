@@ -17,6 +17,7 @@ Exceptions from yt-dlp are wrapped in domain-specific FetchError subclasses:
 from __future__ import annotations
 
 import hashlib
+import os
 import socket
 from datetime import UTC, datetime
 from pathlib import Path
@@ -80,6 +81,15 @@ class YtDlpFetcher:
             defaults.update(config)
 
         self._config = defaults
+        self._cookies_file = os.environ.get("YT_DLP_COOKIES_FILE", "").strip() or None
+        if self._cookies_file and not Path(self._cookies_file).is_file():
+            logger.warning(
+                "YT_DLP_COOKIES_FILE set to {path} but file not found; ignoring",
+                path=self._cookies_file,
+            )
+            self._cookies_file = None
+        if self._cookies_file:
+            logger.debug("Using cookies file: {path}", path=self._cookies_file)
         logger.debug(
             "YtDlpFetcher initialized with config: {config}", config=self._config
         )
@@ -292,6 +302,8 @@ class YtDlpFetcher:
                 "playlistend": limit,
                 "remote_components": ["ejs:github"],
             }
+            if self._cookies_file:
+                ydl_opts["cookiefile"] = self._cookies_file
 
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(channel_url, download=False)
@@ -404,6 +416,8 @@ class YtDlpFetcher:
                 },
                 "remote_components": ["ejs:github"],
             }
+            if self._cookies_file:
+                ydl_opts["cookiefile"] = self._cookies_file
 
             # NOTE: dateafter doesn't work with download=False.
             # Date filtering is done in _enumerate_channel() instead.
@@ -664,6 +678,8 @@ class YtDlpFetcher:
                 "outtmpl": str(output_dir / "%(id)s.%(ext)s"),
                 "remote_components": ["ejs:github"],
             }
+            if self._cookies_file:
+                ydl_opts["cookiefile"] = self._cookies_file
 
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 ydl.download([video_url])
