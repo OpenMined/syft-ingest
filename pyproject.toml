@@ -17,7 +17,7 @@ dependencies = [
 web = ["trafilatura>=1.0", "beautifulsoup4>=4.12"]
 arxiv = ["arxiv>=2.0", "pymupdf>=1.23"]
 podcast = ["openai-whisper>=20230918"]
-rag = ["fastembed>=0.3", "langchain-text-splitters>=0.2"]
+rag = ["fastembed>=0.3", "langchain-text-splitters>=1.1.2"]
 multimodal = [
     "opencv-python-headless>=4.10",
     "Pillow>=10.0",
