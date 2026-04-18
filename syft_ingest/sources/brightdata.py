@@ -49,17 +49,17 @@ except ImportError as e:
 
 # Matches the underlying `brightdata` SDK's AsyncEngine default (30s). Exposed
 # here so callers can depend on a stable name instead of the SDK's internal one.
-DEFAULT_ENGINE_TIMEOUT_SECONDS = 30
+DEFAULT_REQUEST_TIMEOUT_SECONDS = 30
 
 
-def _default_engine_timeout() -> int:
+def _default_request_timeout() -> int:
     """Resolve the per-request timeout from env, falling back to SDK default.
 
-    Reads BRIGHTDATA_ENGINE_TIMEOUT env var if set to a positive integer.
+    Reads BRIGHTDATA_REQUEST_TIMEOUT env var if set to a positive integer.
     Lets operators bump the timeout without code changes when Bright Data's
     /progress endpoint is responding slower than the 30s per-request limit.
     """
-    raw = os.getenv("BRIGHTDATA_ENGINE_TIMEOUT", "").strip()
+    raw = os.getenv("BRIGHTDATA_REQUEST_TIMEOUT", "").strip()
     if raw:
         try:
             val = int(raw)
@@ -67,7 +67,7 @@ def _default_engine_timeout() -> int:
                 return val
         except ValueError:
             pass
-    return DEFAULT_ENGINE_TIMEOUT_SECONDS
+    return DEFAULT_REQUEST_TIMEOUT_SECONDS
 
 
 class BrightDataFetcher:
@@ -81,7 +81,7 @@ class BrightDataFetcher:
 
     Attributes:
         _token: Bright Data API token (from environment or constructor).
-        _engine_timeout: Per-request aiohttp timeout (seconds) passed through
+        _request_timeout: Per-request aiohttp timeout (seconds) passed through
             to the underlying BrightDataClient/AsyncEngine for every HTTP call
             (trigger, poll, fetch).
     """
@@ -89,18 +89,18 @@ class BrightDataFetcher:
     def __init__(
         self,
         token: str | None = None,
-        engine_timeout: int | None = None,
+        request_timeout: int | None = None,
     ):
         """Initialize the fetcher with an API token.
 
         Args:
             token: Bright Data API token. If not provided, will attempt to read
                    from BRIGHTDATA_API_TOKEN environment variable.
-            engine_timeout: Per-request timeout in seconds for every HTTP call
+            request_timeout: Per-request timeout in seconds for every HTTP call
                    the SDK makes to api.brightdata.com. Bumping this helps when
                    the /progress endpoint is slow enough to exceed the 30s
                    default during long-running scrape polls. None (the default)
-                   falls back to the BRIGHTDATA_ENGINE_TIMEOUT env var, then to
+                   falls back to the BRIGHTDATA_REQUEST_TIMEOUT env var, then to
                    30s if neither is set. Do not confuse with the outer poll
                    budget, which is set per-request via FetchRequest.config
                    ("timeout" key) and governs the total wait for job.wait().
@@ -115,8 +115,10 @@ class BrightDataFetcher:
                 "environment variable or pass token= to constructor.",
                 platform="bright-data",
             )
-        self._engine_timeout = (
-            engine_timeout if engine_timeout is not None else _default_engine_timeout()
+        self._request_timeout = (
+            request_timeout
+            if request_timeout is not None
+            else _default_request_timeout()
         )
 
     @staticmethod
@@ -218,7 +220,7 @@ class BrightDataFetcher:
 
         try:
             async with BrightDataClient(
-                token=self._token, timeout=self._engine_timeout
+                token=self._token, timeout=self._request_timeout
             ) as client:
                 url = urls[0]
                 num_of_posts = request.config.get("num_of_posts")

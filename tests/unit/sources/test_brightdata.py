@@ -1027,56 +1027,56 @@ async def test_end_to_end_instagram_fetch_with_parsing(brightdata_fetcher):
         assert result.content_hashes is not None
 
 
-# ---- engine_timeout kwarg and env-var resolution ----
+# ---- request_timeout kwarg and env-var resolution ----
 
 
-def test_init_default_engine_timeout_matches_sdk(valid_token, monkeypatch):
-    """Default engine_timeout is 30s (the underlying SDK's default)."""
-    monkeypatch.delenv("BRIGHTDATA_ENGINE_TIMEOUT", raising=False)
+def test_init_default_request_timeout_matches_sdk(valid_token, monkeypatch):
+    """Default request_timeout is 30s (the underlying SDK's default)."""
+    monkeypatch.delenv("BRIGHTDATA_REQUEST_TIMEOUT", raising=False)
     fetcher = BrightDataFetcher(token="test-token")
-    assert fetcher._engine_timeout == 30
+    assert fetcher._request_timeout == 30
 
 
-def test_init_engine_timeout_kwarg_overrides_default(valid_token, monkeypatch):
-    """Explicit engine_timeout kwarg wins over the default."""
-    monkeypatch.delenv("BRIGHTDATA_ENGINE_TIMEOUT", raising=False)
-    fetcher = BrightDataFetcher(token="test-token", engine_timeout=120)
-    assert fetcher._engine_timeout == 120
+def test_init_request_timeout_kwarg_overrides_default(valid_token, monkeypatch):
+    """Explicit request_timeout kwarg wins over the default."""
+    monkeypatch.delenv("BRIGHTDATA_REQUEST_TIMEOUT", raising=False)
+    fetcher = BrightDataFetcher(token="test-token", request_timeout=120)
+    assert fetcher._request_timeout == 120
 
 
-def test_init_engine_timeout_env_var_applies(valid_token, monkeypatch):
-    """BRIGHTDATA_ENGINE_TIMEOUT env var is used when no kwarg is passed."""
-    monkeypatch.setenv("BRIGHTDATA_ENGINE_TIMEOUT", "90")
+def test_init_request_timeout_env_var_applies(valid_token, monkeypatch):
+    """BRIGHTDATA_REQUEST_TIMEOUT env var is used when no kwarg is passed."""
+    monkeypatch.setenv("BRIGHTDATA_REQUEST_TIMEOUT", "90")
     fetcher = BrightDataFetcher(token="test-token")
-    assert fetcher._engine_timeout == 90
+    assert fetcher._request_timeout == 90
 
 
-def test_init_engine_timeout_kwarg_wins_over_env(valid_token, monkeypatch):
-    """An explicit engine_timeout kwarg overrides the env var."""
-    monkeypatch.setenv("BRIGHTDATA_ENGINE_TIMEOUT", "200")
-    fetcher = BrightDataFetcher(token="test-token", engine_timeout=60)
-    assert fetcher._engine_timeout == 60
+def test_init_request_timeout_kwarg_wins_over_env(valid_token, monkeypatch):
+    """An explicit request_timeout kwarg overrides the env var."""
+    monkeypatch.setenv("BRIGHTDATA_REQUEST_TIMEOUT", "200")
+    fetcher = BrightDataFetcher(token="test-token", request_timeout=60)
+    assert fetcher._request_timeout == 60
 
 
-def test_init_engine_timeout_invalid_env_falls_back(valid_token, monkeypatch):
+def test_init_request_timeout_invalid_env_falls_back(valid_token, monkeypatch):
     """Non-integer env var value is ignored; falls back to the SDK default."""
-    monkeypatch.setenv("BRIGHTDATA_ENGINE_TIMEOUT", "not-a-number")
+    monkeypatch.setenv("BRIGHTDATA_REQUEST_TIMEOUT", "not-a-number")
     fetcher = BrightDataFetcher(token="test-token")
-    assert fetcher._engine_timeout == 30
+    assert fetcher._request_timeout == 30
 
 
-def test_init_engine_timeout_non_positive_env_falls_back(valid_token, monkeypatch):
+def test_init_request_timeout_non_positive_env_falls_back(valid_token, monkeypatch):
     """Zero or negative env var values are ignored; falls back to SDK default."""
-    monkeypatch.setenv("BRIGHTDATA_ENGINE_TIMEOUT", "0")
-    assert BrightDataFetcher(token="test-token")._engine_timeout == 30
-    monkeypatch.setenv("BRIGHTDATA_ENGINE_TIMEOUT", "-5")
-    assert BrightDataFetcher(token="test-token")._engine_timeout == 30
+    monkeypatch.setenv("BRIGHTDATA_REQUEST_TIMEOUT", "0")
+    assert BrightDataFetcher(token="test-token")._request_timeout == 30
+    monkeypatch.setenv("BRIGHTDATA_REQUEST_TIMEOUT", "-5")
+    assert BrightDataFetcher(token="test-token")._request_timeout == 30
 
 
 @pytest.mark.asyncio
-async def test_fetch_async_passes_engine_timeout_to_brightdata_client(valid_token):
-    """The engine_timeout kwarg flows into BrightDataClient as `timeout=...`."""
-    fetcher = BrightDataFetcher(token="test-token", engine_timeout=120)
+async def test_fetch_async_passes_request_timeout_to_brightdata_client(valid_token):
+    """The request_timeout kwarg flows into BrightDataClient as `timeout=...`."""
+    fetcher = BrightDataFetcher(token="test-token", request_timeout=120)
     request = FetchRequest(
         platform=Platform.INSTAGRAM,
         extractor="brightdata",
