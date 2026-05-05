@@ -30,6 +30,7 @@ from syft_ingest.core.models import (
     ContentItem,
     SourceType,
 )
+from syft_ingest.sources._meta_utils import derive_title
 
 # Import the brightdata SDK
 try:
@@ -453,11 +454,13 @@ class BrightDataFetcher:
                 username = entry.get("account") or entry.get("username") or "Unknown"
                 for post in entry["posts"]:
                     try:
+                        text = post.get("caption") or ""
+                        post_id = str(post.get("id", ""))
                         items.append(
                             ContentItem(
-                                title=str(post.get("id", "")),
+                                title=derive_title(text) or post_id,
                                 author=username,
-                                text=post.get("caption") or "",
+                                text=text,
                                 url=post.get("url"),
                                 source_type=SourceType.INSTAGRAM,
                                 published_at=self._parse_date(post.get("datetime")),
@@ -474,11 +477,13 @@ class BrightDataFetcher:
             else:
                 # Search scraper format: flat post dict
                 try:
+                    text = entry.get("description") or ""
+                    post_id = entry.get("post_id") or entry.get("shortcode") or ""
                     items.append(
                         ContentItem(
-                            title=entry.get("post_id") or entry.get("shortcode") or "",
+                            title=derive_title(text) or post_id,
                             author=entry.get("user_posted") or "",
-                            text=entry.get("description") or "",
+                            text=text,
                             url=entry.get("url") or "",
                             source_type=SourceType.INSTAGRAM,
                             published_at=self._parse_date(entry.get("date_posted")),
@@ -511,13 +516,15 @@ class BrightDataFetcher:
 
         for post in posts:
             try:
+                text = post.get("content") or ""
+                post_id = post.get("post_id") or ""
                 items.append(
                     ContentItem(
-                        title=post.get("post_id") or "",
+                        title=derive_title(text) or post_id,
                         author=post.get("page_name")
                         or post.get("user_username_raw")
                         or "",
-                        text=post.get("content") or "",
+                        text=text,
                         url=post.get("url") or "",
                         source_type=SourceType.FACEBOOK,
                         published_at=self._parse_date(post.get("date_posted")),
