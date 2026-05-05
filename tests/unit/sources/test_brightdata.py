@@ -539,7 +539,8 @@ def test_parse_instagram_profile_response(brightdata_fetcher):
     assert len(items) == 1
     assert isinstance(items[0], ContentItem)
     assert items[0].author == "testuser"
-    assert items[0].title == "abc123"
+    # Title derived from post body, not the post_id (which is opaque to fans)
+    assert items[0].title == "My bio post"
     assert items[0].text == "My bio post"
     assert items[0].source_type == SourceType.INSTAGRAM
     assert items[0].metadata["likes"] == 1000
@@ -666,6 +667,175 @@ def test_parse_facebook_video_response(brightdata_fetcher):
     assert items[0].source_type == SourceType.FACEBOOK
     assert items[0].metadata["likes"] == 30
     assert items[0].metadata["post_type"] == "Reel"
+
+
+# ---------------------------------------------------------------------------
+# Title derivation — regression coverage for the post-id-as-title bug
+#
+# Before the fix, BrightData ContentItems hardcoded the post_id (e.g. a
+# 16-digit Facebook ID like "3185652631516770") into the title field. That
+# leaked through to source-link rendering ("• 3185652631516770 https://…")
+# and broke topic clustering, which fed numeric IDs to the labeling LLM.
+#
+# After the fix, title is derived from the post body via derive_title(),
+# falling back to post_id only when the body is empty (e.g. media-only post).
+# ---------------------------------------------------------------------------
+
+
+def test_facebook_title_derives_from_body_not_post_id(brightdata_fetcher):
+    """Facebook post title should be derived from the post body, not the
+    numeric post_id."""
+    raw_data = [
+        {
+            "post_id": "3185652631516770",
+            "content": "LET'S SOLVE PRIVACY #PriCon2020 Conference Sept 26/27",
+            "date_posted": "2020-09-23T00:00:00Z",
+            "page_name": "OpenMined",
+            "url": "https://facebook.com/openminedorg/posts/3185652631516770",
+        }
+    ]
+
+    items = brightdata_fetcher._parse_response(raw_data, "facebook")
+
+    assert len(items) == 1
+    assert items[0].title == "LET'S SOLVE PRIVACY #PriCon2020 Conference Sept 26/27"
+    assert items[0].title != "3185652631516770", (
+        "Title must not be the raw numeric post_id"
+    )
+
+
+def test_facebook_title_falls_back_to_post_id_when_body_empty(brightdata_fetcher):
+    """Media-only Facebook posts (no text body) fall back to post_id so the
+    item still has a non-empty identifier for downstream stable IDs."""
+    raw_data = [
+        {
+            "post_id": "9999999999999999",
+            "content": "",
+            "date_posted": "2020-09-23T00:00:00Z",
+            "page_name": "OpenMined",
+            "url": "https://facebook.com/openminedorg/posts/9999999999999999",
+        }
+    ]
+
+    items = brightdata_fetcher._parse_response(raw_data, "facebook")
+
+    assert len(items) == 1
+    assert items[0].title == "9999999999999999"
+
+
+def test_facebook_title_truncated_for_long_body(brightdata_fetcher):
+    """A long first line is truncated by derive_title (default 80 chars) so
+    the title stays readable in source-link bullets."""
+    long_first_line = (
+        "Today we're announcing a brand new partnership with a research lab "
+        "to push privacy-preserving machine learning forward in healthcare"
+    )
+    raw_data = [
+        {
+            "post_id": "1234567890123456",
+            "content": long_first_line + "\n\nMore details below.",
+            "date_posted": "2020-09-23T00:00:00Z",
+            "page_name": "OpenMined",
+            "url": "https://facebook.com/openminedorg/posts/1234567890123456",
+        }
+    ]
+
+    items = brightdata_fetcher._parse_response(raw_data, "facebook")
+
+    assert len(items) == 1
+    title = items[0].title
+    assert len(title) <= 80
+    assert title.startswith("Today we're announcing")
+    assert title.endswith("...")
+
+
+def test_instagram_search_title_derives_from_description(brightdata_fetcher):
+    """Instagram search-format posts derive title from the description, not
+    the post_id/shortcode."""
+    raw_data = [
+        {
+            "post_id": "abc123",
+            "shortcode": "abc123",
+            "description": "Behind the scenes of our latest video shoot",
+            "user_posted": "creator",
+            "date_posted": "2026-01-01T12:00:00Z",
+            "url": "https://instagram.com/p/abc123",
+        }
+    ]
+
+    items = brightdata_fetcher._parse_response(raw_data, "instagram")
+
+    assert len(items) == 1
+    assert items[0].title == "Behind the scenes of our latest video shoot"
+
+
+def test_instagram_search_title_falls_back_to_post_id_when_empty(
+    brightdata_fetcher,
+):
+    """Instagram search-format posts with no description fall back to
+    post_id (then shortcode) so the item still has a stable identifier."""
+    raw_data = [
+        {
+            "post_id": "xyz789",
+            "shortcode": "xyz789",
+            "description": "",
+            "user_posted": "creator",
+            "date_posted": "2026-01-01T12:00:00Z",
+            "url": "https://instagram.com/p/xyz789",
+        }
+    ]
+
+    items = brightdata_fetcher._parse_response(raw_data, "instagram")
+
+    assert len(items) == 1
+    assert items[0].title == "xyz789"
+
+
+def test_instagram_legacy_posts_title_derives_from_caption(brightdata_fetcher):
+    """Instagram legacy profiles_trigger posts derive title from caption,
+    not the numeric id field."""
+    raw_data = [
+        {
+            "account": "creator",
+            "posts": [
+                {
+                    "id": "555",
+                    "caption": "Sunset over the cliffs",
+                    "datetime": "2026-01-01T12:00:00Z",
+                    "url": "https://instagram.com/p/555",
+                }
+            ],
+        }
+    ]
+
+    items = brightdata_fetcher._parse_response(raw_data, "instagram")
+
+    assert len(items) == 1
+    assert items[0].title == "Sunset over the cliffs"
+
+
+def test_instagram_legacy_posts_title_falls_back_when_caption_empty(
+    brightdata_fetcher,
+):
+    """Instagram legacy posts with no caption fall back to the numeric id."""
+    raw_data = [
+        {
+            "account": "creator",
+            "posts": [
+                {
+                    "id": "555",
+                    "caption": "",
+                    "datetime": "2026-01-01T12:00:00Z",
+                    "url": "https://instagram.com/p/555",
+                }
+            ],
+        }
+    ]
+
+    items = brightdata_fetcher._parse_response(raw_data, "instagram")
+
+    assert len(items) == 1
+    assert items[0].title == "555"
 
 
 def test_empty_response_returns_empty_list(brightdata_fetcher):
