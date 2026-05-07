@@ -203,7 +203,7 @@ async def test_end_to_end_facebook_fetch(
 
     mock_job = AsyncMock()
     mock_job.snapshot_id = "job-fb-e2e"
-    mock_job.wait = AsyncMock()
+    mock_job.status = AsyncMock(return_value="ready")
     mock_job.fetch = AsyncMock(return_value=mock_facebook_posts_response)
 
     mock_client = AsyncMock()
@@ -317,7 +317,7 @@ async def test_end_to_end_facebook_video_fetch(
 
     mock_job = AsyncMock()
     mock_job.snapshot_id = "job-fb-video"
-    mock_job.wait = AsyncMock()
+    mock_job.status = AsyncMock(return_value="ready")
     mock_job.fetch = AsyncMock(return_value=mock_facebook_video_response)
 
     mock_client = AsyncMock()

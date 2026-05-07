@@ -1,9 +1,10 @@
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 from syft_ingest.core.fetcher import (
     AsyncContentFetcher,
     ContentFetcher,
     FetchAuthError,
+    FetchCancelled,
     FetchConfig,
     FetchEmptyResultError,
     Fetcher,
@@ -38,6 +39,7 @@ __all__ = [
     "Embedder",
     "EmbeddingSpec",
     "FetchAuthError",
+    "FetchCancelled",
     "FetchConfig",
     "FetchEmptyResultError",
     "FetchError",

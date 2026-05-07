@@ -11,15 +11,19 @@ Exceptions from the SDK are wrapped in domain-specific FetchError subclasses:
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import os
+import time
 from datetime import UTC, datetime
 from typing import Any
 
+import httpx
 from loguru import logger
 
 from syft_ingest.core.fetcher import (
     FetchAuthError,
+    FetchCancelled,
     FetchEmptyResultError,
     FetchError,
     FetchRequest,
@@ -71,6 +75,184 @@ def _default_request_timeout() -> int:
     return DEFAULT_REQUEST_TIMEOUT_SECONDS
 
 
+_BRIGHTDATA_CANCEL_URL = (
+    "https://api.brightdata.com/datasets/v3/snapshot/{snapshot_id}/cancel"
+)
+
+
+async def _cancel_snapshot(snapshot_id: str) -> None:
+    """Best-effort cancel of a BrightData snapshot.
+
+    POSTs to BrightData's cancel endpoint with the same Bearer token the SDK
+    uses (env var ``BRIGHTDATA_API_TOKEN``). Logs failures rather than raising:
+    callers see ``FetchCancelled`` as the contract surface, and a 4xx/5xx on
+    the cancel API does not change that — the snapshot may continue running
+    on BrightData's side, but the fetcher has stopped polling it either way.
+    """
+    token = os.getenv("BRIGHTDATA_API_TOKEN")
+    if not token:
+        logger.warning(
+            "BRIGHTDATA_API_TOKEN not set; cannot cancel snapshot {sid}",
+            sid=snapshot_id,
+        )
+        return
+
+    url = _BRIGHTDATA_CANCEL_URL.format(snapshot_id=snapshot_id)
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(
+                url, headers={"Authorization": f"Bearer {token}"}
+            )
+            response.raise_for_status()
+        logger.info("Cancelled BrightData snapshot {sid}", sid=snapshot_id)
+    except httpx.HTTPError as e:
+        logger.warning(
+            "Failed to cancel BrightData snapshot {sid}: {err}",
+            sid=snapshot_id,
+            err=e,
+        )
+
+
+_MAX_TRANSIENT_STATUS_FAILURES = 5
+"""Tolerate up to N consecutive status() failures before giving up. A 30-second
+network hiccup at poll_interval=15s would be 2 misses; 5 gives us margin without
+keeping a doomed fetch alive forever."""
+
+
+async def _poll_until_ready(
+    job: Any,
+    *,
+    request: FetchRequest,
+    timeout: int,
+    poll_interval: int,
+    platform_name: str,
+) -> None:
+    """Poll a BrightData ScrapeJob until it reaches the 'ready' state.
+
+    Replaces the SDK's blocking ``job.wait(timeout, poll_interval)`` with an
+    explicit loop driven by the SDK's ``job.status(refresh=True)``. The loop
+    fires ``request.status_callback`` on every status transition (de-duped,
+    not every tick), consults ``request.cancel_callback`` after each status
+    read (cancelling the remote snapshot via httpx and raising
+    ``FetchCancelled`` if it returns True), and tolerates up to
+    ``_MAX_TRANSIENT_STATUS_FAILURES`` consecutive unexpected exceptions
+    from ``job.status()`` before giving up — so a brief network outage
+    does not kill a long-running fetch.
+
+    Args:
+        job: A ``brightdata.scrapers.base.ScrapeJob`` (or any object with
+            ``.snapshot_id`` and an async ``.status(refresh=True)`` method).
+        request: The active FetchRequest, source of optional callbacks.
+        timeout: Total seconds before raising FetchTimeoutError.
+        poll_interval: Seconds between status() calls.
+        platform_name: Used for FetchError ``platform`` attribution.
+
+    Raises:
+        FetchCancelled: ``cancel_callback`` returned True; remote snapshot
+            has been signalled to cancel (best-effort).
+        FetchError: Snapshot transitioned to ``error``/``failed``, or
+            ``job.status()`` raised an unexpected error
+            ``_MAX_TRANSIENT_STATUS_FAILURES`` times in a row.
+        FetchTimeoutError: Snapshot did not reach ``ready`` before deadline.
+    """
+    snapshot_id: str = job.snapshot_id
+    last_status: str | None = None
+
+    def _emit_status(status: str) -> None:
+        """Fire status_callback only on transitions; swallow exceptions."""
+        nonlocal last_status
+        if status == last_status:
+            return
+        last_status = status
+        if request.status_callback is None:
+            return
+        try:
+            request.status_callback(snapshot_id, status)
+        except Exception as e:
+            logger.debug(
+                "status_callback raised for {sid}: {err}",
+                sid=snapshot_id,
+                err=e,
+            )
+
+    # Synthetic 'triggered' so callers see immediate signal even before the
+    # first /progress/ call returns.
+    _emit_status("triggered")
+
+    deadline = time.monotonic() + timeout
+    transient_failures = 0
+    while True:
+        try:
+            status_str = await job.status(refresh=True)
+            transient_failures = 0  # success resets the budget
+        except (
+            AuthenticationError,
+            APIError,
+            DataNotReadyError,
+            ValidationError,
+            TimeoutError,
+            FetchError,
+        ):
+            # SDK / domain errors carry specific semantics — let the outer
+            # fetch_async handler classify them (auth → FetchAuthError,
+            # not-ready → FetchTimeoutError, etc.). They are NOT transient.
+            raise
+        except Exception as e:
+            # Truly unexpected error (network blip, connection reset, etc.)
+            # — count against the retry budget so a 30s outage doesn't kill
+            # a 1-hour fetch.
+            transient_failures += 1
+            logger.warning(
+                "status() failed for {sid} ({n}/{max}): {err}",
+                sid=snapshot_id,
+                n=transient_failures,
+                max=_MAX_TRANSIENT_STATUS_FAILURES,
+                err=e,
+            )
+            if transient_failures >= _MAX_TRANSIENT_STATUS_FAILURES:
+                raise FetchError(
+                    f"status() failed {_MAX_TRANSIENT_STATUS_FAILURES} times "
+                    f"for snapshot {snapshot_id}: {e}",
+                    platform=platform_name,
+                ) from e
+            if time.monotonic() >= deadline:
+                raise FetchTimeoutError(
+                    f"Snapshot {snapshot_id} polling exceeded {timeout}s "
+                    f"(during transient-error backoff)",
+                    platform=platform_name,
+                ) from e
+            await asyncio.sleep(poll_interval)
+            continue
+
+        _emit_status(status_str)
+
+        if status_str == "ready":
+            return
+        if status_str in ("error", "failed"):
+            raise FetchError(
+                f"Snapshot {snapshot_id} failed with status: {status_str}",
+                platform=platform_name,
+            )
+
+        # Cancel check happens AFTER status read so a same-tick 'ready' wins
+        # over a Remove click — we don't want to cancel a snapshot whose data
+        # has already been collected and is one fetch() call away.
+        if request.cancel_callback is not None and request.cancel_callback():
+            await _cancel_snapshot(snapshot_id)
+            raise FetchCancelled(
+                f"Cancellation requested for snapshot {snapshot_id}",
+                platform=platform_name,
+            )
+
+        if time.monotonic() >= deadline:
+            raise FetchTimeoutError(
+                f"Snapshot {snapshot_id} polling exceeded {timeout}s",
+                platform=platform_name,
+            )
+
+        await asyncio.sleep(poll_interval)
+
+
 class BrightDataFetcher:
     """Strategy fetcher for Facebook and Instagram via Bright Data API.
 
@@ -104,7 +286,8 @@ class BrightDataFetcher:
                    falls back to the BRIGHTDATA_REQUEST_TIMEOUT env var, then to
                    30s if neither is set. Do not confuse with the outer poll
                    budget, which is set per-request via FetchRequest.config
-                   ("timeout" key) and governs the total wait for job.wait().
+                   ("timeout" key) and governs the total deadline for the
+                   _poll_until_ready helper.
 
         Raises:
             FetchAuthError: If no token provided and environment variable not set.
@@ -273,10 +456,12 @@ class BrightDataFetcher:
                         timeout=timeout,
                         interval=poll_interval,
                     )
-                    await job.wait(
+                    await _poll_until_ready(
+                        job,
+                        request=request,
                         timeout=timeout,
                         poll_interval=poll_interval,
-                        verbose=False,
+                        platform_name=platform_name,
                     )
                     logger.debug("Job {job_id} completed", job_id=job.snapshot_id)
 
@@ -339,7 +524,8 @@ class BrightDataFetcher:
             ) from e
 
         except TimeoutError as e:
-            # job.wait() raised TimeoutError (poll deadline exceeded)
+            # Builtin TimeoutError surfaced from the SDK (e.g. raised by
+            # job.status() when the underlying HTTP call times out).
             logger.warning("Poll timeout after {timeout}s", timeout=timeout)
             raise FetchTimeoutError(
                 f"Scrape timed out after {timeout}s", platform=platform_name

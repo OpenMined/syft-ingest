@@ -118,6 +118,25 @@ class FetchRequest(BaseModel):
         exclude=True,
         description="Optional callable(items_count: int) called after each item is fetched",
     )
+    status_callback: Any | None = Field(
+        default=None,
+        exclude=True,
+        description=(
+            "Optional callable(snapshot_id: str, remote_status: str) called on every "
+            "status transition during BrightData polling. Use for live-status reporting "
+            "in an external orchestrator (e.g. admin UI). Synchronous; called from the "
+            "async poll loop, so keep it fast (non-blocking writes only)."
+        ),
+    )
+    cancel_callback: Any | None = Field(
+        default=None,
+        exclude=True,
+        description=(
+            "Optional callable() -> bool consulted on every poll tick. If True, "
+            "the fetcher cancels the remote snapshot and raises FetchCancelled. "
+            "Synchronous; called from the async poll loop."
+        ),
+    )
     config: FetchConfig | dict[str, Any] = Field(
         default_factory=dict,
         description="Fetcher-specific options (validated via FetchConfig, converted to dict)",
@@ -308,4 +327,15 @@ class FetchEmptyResultError(FetchError):
 
     This is distinct from a timeout or auth failure — the upstream service
     responded, but the result set was empty (e.g. the profile has no posts).
+    """
+
+
+class FetchCancelled(FetchError):
+    """Caller-requested cancellation observed mid-fetch.
+
+    Raised when a ``cancel_callback`` returns True during the poll loop and
+    the fetcher has notified the upstream service to abort the snapshot.
+    Distinct from ``FetchTimeoutError`` (deadline exceeded) and ``FetchError``
+    (upstream failure). Callers can ``except FetchCancelled`` to finalize a
+    cancellation without treating it as an error.
     """

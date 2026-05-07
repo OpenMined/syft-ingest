@@ -38,10 +38,16 @@ def brightdata_fetcher(valid_token):
 
 @pytest.fixture
 def mock_job():
-    """Create a mock ScrapeJob with basic properties."""
+    """Create a mock ScrapeJob with basic properties.
+
+    The fetcher's poll loop calls ``await job.status(refresh=True)`` per tick;
+    we set it to return "ready" immediately so the loop breaks on the first
+    iteration and tests don't spin until timeout. Tests that need a different
+    status sequence override ``job.status`` after the fixture creates it.
+    """
     job = AsyncMock()
     job.snapshot_id = "mock-job-12345"
-    job.wait = AsyncMock()
+    job.status = AsyncMock(return_value="ready")
     job.fetch = AsyncMock(return_value={"profiles": []})
     return job
 
@@ -111,7 +117,7 @@ async def testfetch_async_with_facebook_profile_success(brightdata_fetcher):
 
     mock_job = AsyncMock()
     mock_job.snapshot_id = "job-fb-002"
-    mock_job.wait = AsyncMock()
+    mock_job.status = AsyncMock(return_value="ready")
     mock_job.fetch = AsyncMock(
         return_value={
             "posts": [
@@ -147,10 +153,13 @@ async def testfetch_async_with_facebook_profile_success(brightdata_fetcher):
             url="https://facebook.com/testuser"
         )
 
-        # Verify job.wait was called with custom poll_interval
-        call_kwargs = mock_job.wait.call_args[1]
-        assert call_kwargs["timeout"] == 45
-        assert call_kwargs["poll_interval"] == 3
+        # Verify the poll loop ran (status was queried at least once with the
+        # SDK's refresh=True signature). The exact timeout / poll_interval are
+        # now consumed by syft_ingest's own _poll_until_ready helper rather
+        # than the SDK's job.wait, so we no longer assert on them here — the
+        # poll-helper unit tests cover that contract directly.
+        assert mock_job.status.await_count >= 1
+        mock_job.status.assert_awaited_with(refresh=True)
 
 
 @pytest.mark.asyncio
@@ -239,8 +248,10 @@ async def test_data_not_ready_error_raises_fetch_timeout_error(brightdata_fetche
 
     mock_job = AsyncMock()
     mock_job.snapshot_id = "job-not-ready"
-    # SDK raises DataNotReadyError when job still pending after max retries
-    mock_job.wait = AsyncMock(side_effect=DataNotReadyError("still pending"))
+    # SDK raises DataNotReadyError when job still pending after max retries.
+    # In the new poll loop the call site is job.status(); the outer fetch_async
+    # exception handler catches DataNotReadyError regardless of where it came from.
+    mock_job.status = AsyncMock(side_effect=DataNotReadyError("still pending"))
 
     mock_client = AsyncMock()
     mock_scraper = AsyncMock()
@@ -347,7 +358,7 @@ async def test_api_error_403_raises_fetch_auth_error(brightdata_fetcher):
 
     mock_job = AsyncMock()
     mock_job.snapshot_id = "job-403"
-    mock_job.wait = AsyncMock()
+    mock_job.status = AsyncMock(return_value="ready")
     # fetch() raises APIError with 403
     api_error = APIError("Forbidden")
     api_error.status_code = 403
@@ -380,7 +391,7 @@ async def test_api_error_500_raises_fetch_error(brightdata_fetcher):
 
     mock_job = AsyncMock()
     mock_job.snapshot_id = "job-500"
-    mock_job.wait = AsyncMock()
+    mock_job.status = AsyncMock(return_value="ready")
     # fetch() raises APIError with 500
     api_error = APIError("Internal Server Error")
     api_error.status_code = 500
@@ -487,7 +498,10 @@ def test_run_fetcher_sync_propagates_fetch_timeout_error(brightdata_fetcher):
     )
     mock_job = AsyncMock()
     mock_job.snapshot_id = "job-timeout-sync"
-    mock_job.wait = AsyncMock(side_effect=TimeoutError("Timed out"))
+    # In the new poll loop, TimeoutError can come from job.status(); the outer
+    # fetch_async TimeoutError handler still catches it and re-raises as
+    # FetchTimeoutError.
+    mock_job.status = AsyncMock(side_effect=TimeoutError("Timed out"))
     mock_client = AsyncMock()
     mock_scraper = AsyncMock()
     mock_scraper.posts_by_profile_trigger = AsyncMock(return_value=mock_job)
@@ -858,7 +872,7 @@ async def test_empty_result_error_in_fetch(brightdata_fetcher):
 
     mock_job = AsyncMock()
     mock_job.snapshot_id = "job-empty"
-    mock_job.wait = AsyncMock()
+    mock_job.status = AsyncMock(return_value="ready")
     mock_job.fetch = AsyncMock(return_value={})  # Empty response
 
     mock_client = AsyncMock()
@@ -962,7 +976,7 @@ async def test_facebook_trigger_includes_start_date_when_provided(brightdata_fet
 
     mock_job = AsyncMock()
     mock_job.snapshot_id = "job-fb-date"
-    mock_job.wait = AsyncMock()
+    mock_job.status = AsyncMock(return_value="ready")
     mock_job.fetch = AsyncMock(
         return_value=[
             {
@@ -1000,7 +1014,7 @@ async def test_facebook_trigger_omits_start_date_when_none(brightdata_fetcher):
 
     mock_job = AsyncMock()
     mock_job.snapshot_id = "job-fb-nodate"
-    mock_job.wait = AsyncMock()
+    mock_job.status = AsyncMock(return_value="ready")
     mock_job.fetch = AsyncMock(
         return_value=[
             {

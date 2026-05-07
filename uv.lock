@@ -4278,10 +4278,11 @@ wheels = [
 
 [[package]]
 name = "syft-ingest"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "brightdata-sdk" },
+    { name = "httpx" },
     { name = "loguru" },
     { name = "pydantic" },
     { name = "yt-dlp" },
@@ -4367,6 +4368,7 @@ requires-dist = [
     { name = "brightdata-sdk", specifier = ">=2.3.0" },
     { name = "chromadb", marker = "extra == 'chroma'", specifier = ">=0.4" },
     { name = "fastembed", marker = "extra == 'rag'", specifier = ">=0.3" },
+    { name = "httpx", specifier = ">=0.28" },
     { name = "langchain-text-splitters", marker = "extra == 'rag'", specifier = ">=1.1.2" },
     { name = "loguru", specifier = ">=0.7" },
     { name = "notebooklm-py", marker = "extra == 'notebooklm'", specifier = ">=0.1" },
