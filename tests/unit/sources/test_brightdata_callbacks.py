@@ -467,3 +467,66 @@ async def test_cancel_api_failure_does_not_mask_FetchCancelled(monkeypatch):
                 poll_interval=0,
                 platform_name="facebook",
             )
+
+
+@pytest.mark.asyncio
+async def test_transient_status_errors_retry_and_recover():
+    """A few consecutive status() failures are tolerated — the loop retries
+    and resumes polling. A 30-second network blip must not kill a 1-hour fetch."""
+    from syft_ingest.sources.brightdata import _poll_until_ready
+
+    job = AsyncMock()
+    job.snapshot_id = "sd_blip"
+
+    # Status sequence: error, error, error, in_progress, ready
+    # (3 transient failures within budget of 5, then recovers)
+    seq = [
+        RuntimeError("connection reset"),
+        RuntimeError("connection reset"),
+        RuntimeError("connection reset"),
+        "in_progress",
+        "ready",
+    ]
+    seq_iter = iter(seq)
+
+    async def _status(refresh: bool = True) -> str:
+        nxt = next(seq_iter)
+        if isinstance(nxt, Exception):
+            raise nxt
+        return nxt
+
+    job.status = _status
+
+    # Should complete successfully despite the 3 transient failures.
+    await _poll_until_ready(
+        job,
+        request=FetchRequest(platform="instagram", urls=["https://instagram.com/x/"]),
+        timeout=60,
+        poll_interval=0,
+        platform_name="instagram",
+    )
+
+
+@pytest.mark.asyncio
+async def test_transient_status_errors_exhausted_raise_FetchError():
+    """5+ consecutive status() failures exhaust the retry budget and raise
+    a FetchError carrying the snapshot_id."""
+    from syft_ingest.sources.brightdata import _poll_until_ready
+
+    job = AsyncMock()
+    job.snapshot_id = "sd_dead"
+
+    async def _always_fail(refresh: bool = True) -> str:
+        raise RuntimeError("backend down")
+
+    job.status = _always_fail
+
+    with pytest.raises(FetchError) as excinfo:
+        await _poll_until_ready(
+            job,
+            request=FetchRequest(platform="facebook", urls=["https://facebook.com/x"]),
+            timeout=60,
+            poll_interval=0,
+            platform_name="facebook",
+        )
+    assert "sd_dead" in str(excinfo.value)

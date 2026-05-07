@@ -113,6 +113,12 @@ async def _cancel_snapshot(snapshot_id: str) -> None:
         )
 
 
+_MAX_TRANSIENT_STATUS_FAILURES = 5
+"""Tolerate up to N consecutive status() failures before giving up. A 30-second
+network hiccup at poll_interval=15s would be 2 misses; 5 gives us margin without
+keeping a doomed fetch alive forever."""
+
+
 async def _poll_until_ready(
     job: Any,
     *,
@@ -167,8 +173,50 @@ async def _poll_until_ready(
     _emit_status("triggered")
 
     deadline = time.monotonic() + timeout
+    transient_failures = 0
     while True:
-        status_str = await job.status(refresh=True)
+        try:
+            status_str = await job.status(refresh=True)
+            transient_failures = 0  # success resets the budget
+        except (
+            AuthenticationError,
+            APIError,
+            DataNotReadyError,
+            ValidationError,
+            TimeoutError,
+            FetchError,
+        ):
+            # SDK / domain errors carry specific semantics — let the outer
+            # fetch_async handler classify them (auth → FetchAuthError,
+            # not-ready → FetchTimeoutError, etc.). They are NOT transient.
+            raise
+        except Exception as e:
+            # Truly unexpected error (network blip, connection reset, etc.)
+            # — count against the retry budget so a 30s outage doesn't kill
+            # a 1-hour fetch.
+            transient_failures += 1
+            logger.warning(
+                "status() failed for {sid} ({n}/{max}): {err}",
+                sid=snapshot_id,
+                n=transient_failures,
+                max=_MAX_TRANSIENT_STATUS_FAILURES,
+                err=e,
+            )
+            if transient_failures >= _MAX_TRANSIENT_STATUS_FAILURES:
+                raise FetchError(
+                    f"status() failed {_MAX_TRANSIENT_STATUS_FAILURES} times "
+                    f"for snapshot {snapshot_id}: {e}",
+                    platform=platform_name,
+                ) from e
+            if time.monotonic() >= deadline:
+                raise FetchTimeoutError(
+                    f"Snapshot {snapshot_id} polling exceeded {timeout}s "
+                    f"(during transient-error backoff)",
+                    platform=platform_name,
+                ) from e
+            await asyncio.sleep(poll_interval)
+            continue
+
         _emit_status(status_str)
 
         if status_str == "ready":
