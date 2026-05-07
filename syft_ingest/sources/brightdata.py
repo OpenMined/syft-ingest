@@ -279,7 +279,8 @@ class BrightDataFetcher:
                    falls back to the BRIGHTDATA_REQUEST_TIMEOUT env var, then to
                    30s if neither is set. Do not confuse with the outer poll
                    budget, which is set per-request via FetchRequest.config
-                   ("timeout" key) and governs the total wait for job.wait().
+                   ("timeout" key) and governs the total deadline for the
+                   _poll_until_ready helper.
 
         Raises:
             FetchAuthError: If no token provided and environment variable not set.
@@ -516,7 +517,8 @@ class BrightDataFetcher:
             ) from e
 
         except TimeoutError as e:
-            # job.wait() raised TimeoutError (poll deadline exceeded)
+            # Builtin TimeoutError surfaced from the SDK (e.g. raised by
+            # job.status() when the underlying HTTP call times out).
             logger.warning("Poll timeout after {timeout}s", timeout=timeout)
             raise FetchTimeoutError(
                 f"Scrape timed out after {timeout}s", platform=platform_name
