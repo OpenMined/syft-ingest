@@ -130,9 +130,14 @@ async def _poll_until_ready(
     """Poll a BrightData ScrapeJob until it reaches the 'ready' state.
 
     Replaces the SDK's blocking ``job.wait(timeout, poll_interval)`` with an
-    explicit loop that fires ``request.status_callback`` on every status
-    transition. (Cancel handling and transient-error retry are added in
-    follow-up commits.)
+    explicit loop driven by the SDK's ``job.status(refresh=True)``. The loop
+    fires ``request.status_callback`` on every status transition (de-duped,
+    not every tick), consults ``request.cancel_callback`` after each status
+    read (cancelling the remote snapshot via httpx and raising
+    ``FetchCancelled`` if it returns True), and tolerates up to
+    ``_MAX_TRANSIENT_STATUS_FAILURES`` consecutive unexpected exceptions
+    from ``job.status()`` before giving up — so a brief network outage
+    does not kill a long-running fetch.
 
     Args:
         job: A ``brightdata.scrapers.base.ScrapeJob`` (or any object with
@@ -145,7 +150,9 @@ async def _poll_until_ready(
     Raises:
         FetchCancelled: ``cancel_callback`` returned True; remote snapshot
             has been signalled to cancel (best-effort).
-        FetchError: Snapshot transitioned to ``error`` or ``failed``.
+        FetchError: Snapshot transitioned to ``error``/``failed``, or
+            ``job.status()`` raised an unexpected error
+            ``_MAX_TRANSIENT_STATUS_FAILURES`` times in a row.
         FetchTimeoutError: Snapshot did not reach ``ready`` before deadline.
     """
     snapshot_id: str = job.snapshot_id
