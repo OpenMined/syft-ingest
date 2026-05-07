@@ -34,7 +34,24 @@ from syft_ingest.core.models import (
     ContentItem,
     SourceType,
 )
-from syft_ingest.sources._meta_utils import derive_title
+from syft_ingest.sources._meta_utils import (
+    derive_title_from_post,
+    extract_first_text_field,
+    fallback_title_for_empty_post,
+)
+
+# Per-platform text-field walk order. Both `title` (truncated to 80 chars)
+# and `text` (full body for RAG) walk the same list so a media-only post
+# whose `content` is empty but `description` carries the body still produces
+# a coherent ContentItem — title from description, body from description.
+_FB_TEXT_FIELDS: tuple[str, ...] = (
+    "content",
+    "attached_post_text",
+    "description",
+    "caption",
+)
+_IG_LEGACY_TEXT_FIELDS: tuple[str, ...] = ("caption", "description", "text")
+_IG_SEARCH_TEXT_FIELDS: tuple[str, ...] = ("description", "caption", "text")
 
 # Import the brightdata SDK
 try:
@@ -640,11 +657,14 @@ class BrightDataFetcher:
                 username = entry.get("account") or entry.get("username") or "Unknown"
                 for post in entry["posts"]:
                     try:
-                        text = post.get("caption") or ""
+                        text = extract_first_text_field(post, _IG_LEGACY_TEXT_FIELDS)
                         post_id = str(post.get("id", ""))
                         items.append(
                             ContentItem(
-                                title=derive_title(text) or post_id,
+                                title=derive_title_from_post(
+                                    post, _IG_LEGACY_TEXT_FIELDS
+                                )
+                                or fallback_title_for_empty_post("Instagram", post_id),
                                 author=username,
                                 text=text,
                                 url=post.get("url"),
@@ -663,11 +683,12 @@ class BrightDataFetcher:
             else:
                 # Search scraper format: flat post dict
                 try:
-                    text = entry.get("description") or ""
+                    text = extract_first_text_field(entry, _IG_SEARCH_TEXT_FIELDS)
                     post_id = entry.get("post_id") or entry.get("shortcode") or ""
                     items.append(
                         ContentItem(
-                            title=derive_title(text) or post_id,
+                            title=derive_title_from_post(entry, _IG_SEARCH_TEXT_FIELDS)
+                            or fallback_title_for_empty_post("Instagram", post_id),
                             author=entry.get("user_posted") or "",
                             text=text,
                             url=entry.get("url") or "",
@@ -702,11 +723,12 @@ class BrightDataFetcher:
 
         for post in posts:
             try:
-                text = post.get("content") or ""
+                text = extract_first_text_field(post, _FB_TEXT_FIELDS)
                 post_id = post.get("post_id") or ""
                 items.append(
                     ContentItem(
-                        title=derive_title(text) or post_id,
+                        title=derive_title_from_post(post, _FB_TEXT_FIELDS)
+                        or fallback_title_for_empty_post("Facebook", post_id),
                         author=post.get("page_name")
                         or post.get("user_username_raw")
                         or "",

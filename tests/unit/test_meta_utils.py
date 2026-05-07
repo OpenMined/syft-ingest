@@ -1,8 +1,11 @@
 from syft_ingest.sources._meta_utils import (
     content_hash,
     derive_title,
+    derive_title_from_post,
+    extract_first_text_field,
     extract_hashtags,
     extract_mentions,
+    fallback_title_for_empty_post,
     fix_meta_encoding,
     fix_meta_encoding_recursive,
     is_bare_url,
@@ -137,3 +140,111 @@ def test_derive_title_no_spaces():
     title = derive_title(long_word, max_length=80)
     assert len(title) == 80  # 77 + "..."
     assert title.endswith("...")
+
+
+def test_derive_title_from_post_uses_first_non_empty_field():
+    """Walks the candidate list in order; first field with a usable title wins."""
+    post = {
+        "content": "",
+        "description": "Behind the scenes of our research lab",
+        "caption": "Should not be reached",
+    }
+    assert (
+        derive_title_from_post(post, ("content", "description", "caption"))
+        == "Behind the scenes of our research lab"
+    )
+
+
+def test_derive_title_from_post_skips_empty_and_whitespace_fields():
+    """Whitespace-only and missing fields don't count as 'usable'."""
+    post = {
+        "content": "   ",
+        "description": "",
+        "caption": "Real headline lives here",
+    }
+    assert (
+        derive_title_from_post(post, ("content", "description", "caption"))
+        == "Real headline lives here"
+    )
+
+
+def test_derive_title_from_post_returns_empty_when_all_fields_empty():
+    """Caller is expected to chain with `fallback_title_for_empty_post`."""
+    post = {"content": "", "description": "", "caption": ""}
+    assert derive_title_from_post(post, ("content", "description", "caption")) == ""
+
+
+def test_derive_title_from_post_skips_non_string_values():
+    """A field present-but-not-a-string (e.g. a list of media items)
+    should not crash; just walk to the next candidate."""
+    post = {
+        "content": ["media-item-1", "media-item-2"],
+        "description": "Actual headline",
+    }
+    assert derive_title_from_post(post, ("content", "description")) == "Actual headline"
+
+
+def test_derive_title_from_post_first_line_only():
+    """Walk uses derive_title (first-line, truncated) — not the entire field."""
+    post = {
+        "content": "First line headline\n\nSecond paragraph that should be ignored",
+    }
+    assert derive_title_from_post(post, ("content",)) == "First line headline"
+
+
+def test_extract_first_text_field_returns_first_non_empty():
+    """Returns the full untruncated string from the first non-empty field."""
+    post = {
+        "content": "",
+        "description": "Behind the scenes\n\nA second paragraph follows.",
+        "caption": "Should not be reached",
+    }
+    # Untruncated, full content (incl. newlines) — unlike derive_title which
+    # truncates and takes first line only.
+    assert (
+        extract_first_text_field(post, ("content", "description", "caption"))
+        == "Behind the scenes\n\nA second paragraph follows."
+    )
+
+
+def test_extract_first_text_field_skips_whitespace_only():
+    """Whitespace-only fields don't count as 'usable' — same rule as title."""
+    post = {"content": "   ", "description": "Real body text"}
+    assert (
+        extract_first_text_field(post, ("content", "description")) == "Real body text"
+    )
+
+
+def test_extract_first_text_field_returns_empty_when_all_empty():
+    """Mirrors derive_title_from_post — caller decides on the fallback."""
+    post = {"content": "", "description": "", "caption": ""}
+    assert extract_first_text_field(post, ("content", "description", "caption")) == ""
+
+
+def test_extract_first_text_field_skips_non_string_values():
+    """Non-string values (e.g. lists of media items) are skipped, not crashed on."""
+    post = {
+        "content": ["media-item-1", "media-item-2"],
+        "description": "Actual body text",
+    }
+    assert (
+        extract_first_text_field(post, ("content", "description")) == "Actual body text"
+    )
+
+
+def test_fallback_title_for_empty_post_with_id():
+    """A media-only post with a real post_id gets a platform-prefixed title.
+
+    Bare numeric IDs poison topic clustering — the prefix gives every
+    fallback row a stable shape that reads sensibly to humans.
+    """
+    assert fallback_title_for_empty_post("Facebook", "12345") == "Facebook post 12345"
+    assert (
+        fallback_title_for_empty_post("Instagram", "abc789") == "Instagram post abc789"
+    )
+
+
+def test_fallback_title_for_empty_post_with_missing_id():
+    """When the post_id is also missing, return a platform-tagged Untitled."""
+    assert fallback_title_for_empty_post("Facebook", "") == "Untitled Facebook post"
+    assert fallback_title_for_empty_post("Instagram", "") == "Untitled Instagram post"
