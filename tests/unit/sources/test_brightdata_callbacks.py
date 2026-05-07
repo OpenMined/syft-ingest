@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import httpx
+import pytest
+
 from syft_ingest import FetchCancelled, FetchError, FetchRequest
 
 
@@ -74,6 +79,228 @@ def test_fetchrequest_callbacks_excluded_from_serialization():
     dumped = req.model_dump()
     assert "status_callback" not in dumped
     assert "cancel_callback" not in dumped
+
+
+@pytest.mark.asyncio
+async def test_cancel_snapshot_no_token_logs_warning_and_returns(monkeypatch):
+    """When BRIGHTDATA_API_TOKEN is unset, _cancel_snapshot logs a warning
+    and returns silently — never raises (best-effort contract)."""
+    from syft_ingest.sources.brightdata import _cancel_snapshot
+
+    monkeypatch.delenv("BRIGHTDATA_API_TOKEN", raising=False)
+
+    # Should NOT raise, should NOT make any HTTP call.
+    with patch("syft_ingest.sources.brightdata.httpx.AsyncClient") as mock_client_cls:
+        await _cancel_snapshot("sd_test123")
+        mock_client_cls.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_cancel_snapshot_posts_to_correct_url_with_bearer_token(monkeypatch):
+    """_cancel_snapshot POSTs to /datasets/v3/snapshot/{id}/cancel with Bearer auth."""
+    from syft_ingest.sources.brightdata import _cancel_snapshot
+
+    monkeypatch.setenv("BRIGHTDATA_API_TOKEN", "test-token-abc")
+
+    mock_response = MagicMock(spec=httpx.Response)
+    mock_response.raise_for_status = MagicMock()
+    mock_client = AsyncMock()
+    mock_client.post = AsyncMock(return_value=mock_response)
+
+    mock_client_cls = MagicMock()
+    mock_client_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client_cls.return_value.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("syft_ingest.sources.brightdata.httpx.AsyncClient", mock_client_cls):
+        await _cancel_snapshot("sd_motthp1rn0zlfpwjx")
+
+    mock_client.post.assert_awaited_once_with(
+        "https://api.brightdata.com/datasets/v3/snapshot/sd_motthp1rn0zlfpwjx/cancel",
+        headers={"Authorization": "Bearer test-token-abc"},
+    )
+    mock_response.raise_for_status.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_cancel_snapshot_http_error_logs_and_returns(monkeypatch):
+    """An HTTP error during cancel is logged but does NOT raise — the
+    FetchCancelled exception in the poll loop is the contract surface, not
+    the cancel API."""
+    from syft_ingest.sources.brightdata import _cancel_snapshot
+
+    monkeypatch.setenv("BRIGHTDATA_API_TOKEN", "test-token-abc")
+
+    mock_response = MagicMock(spec=httpx.Response)
+    mock_response.raise_for_status = MagicMock(
+        side_effect=httpx.HTTPStatusError(
+            "400 Bad Request", request=MagicMock(), response=mock_response
+        )
+    )
+    mock_client = AsyncMock()
+    mock_client.post = AsyncMock(return_value=mock_response)
+
+    mock_client_cls = MagicMock()
+    mock_client_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client_cls.return_value.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("syft_ingest.sources.brightdata.httpx.AsyncClient", mock_client_cls):
+        # Must NOT raise.
+        await _cancel_snapshot("sd_test123")
+
+
+def _make_mock_job(snapshot_id: str = "sd_test", statuses: list[str] | None = None):
+    """Build an AsyncMock job that walks through the given status sequence."""
+    job = AsyncMock()
+    job.snapshot_id = snapshot_id
+    statuses = statuses or ["ready"]
+    status_iter = iter(statuses)
+
+    async def _status(refresh: bool = True) -> str:
+        return next(status_iter)
+
+    job.status = _status
+    return job
+
+
+@pytest.mark.asyncio
+async def test_poll_loop_breaks_on_ready_status():
+    """The loop must return cleanly when status reaches 'ready'."""
+    from syft_ingest.sources.brightdata import _poll_until_ready
+
+    job = _make_mock_job(statuses=["in_progress", "ready"])
+    await _poll_until_ready(
+        job,
+        request=FetchRequest(platform="instagram", urls=["https://instagram.com/x/"]),
+        timeout=10,
+        poll_interval=0,  # tests run instant — no real sleep
+        platform_name="instagram",
+    )
+    # No exception raised — that IS the success signal.
+
+
+@pytest.mark.asyncio
+async def test_poll_loop_raises_FetchError_on_failed_status():
+    """status='failed' must raise FetchError carrying the snapshot_id."""
+    from syft_ingest.sources.brightdata import _poll_until_ready
+
+    job = _make_mock_job(snapshot_id="sd_xyz", statuses=["in_progress", "failed"])
+
+    with pytest.raises(FetchError) as excinfo:
+        await _poll_until_ready(
+            job,
+            request=FetchRequest(platform="facebook", urls=["https://facebook.com/x"]),
+            timeout=10,
+            poll_interval=0,
+            platform_name="facebook",
+        )
+    assert "sd_xyz" in str(excinfo.value)
+
+
+@pytest.mark.asyncio
+async def test_poll_loop_raises_FetchError_on_error_status():
+    """status='error' is treated identically to 'failed'."""
+    from syft_ingest.sources.brightdata import _poll_until_ready
+
+    job = _make_mock_job(statuses=["error"])
+
+    with pytest.raises(FetchError):
+        await _poll_until_ready(
+            job,
+            request=FetchRequest(
+                platform="instagram", urls=["https://instagram.com/x/"]
+            ),
+            timeout=10,
+            poll_interval=0,
+            platform_name="instagram",
+        )
+
+
+@pytest.mark.asyncio
+async def test_status_callback_fires_on_each_transition():
+    """status_callback fires once per distinct status value (transition-only,
+    not every poll tick) with (snapshot_id, status)."""
+    from syft_ingest.sources.brightdata import _poll_until_ready
+
+    captured: list[tuple[str, str]] = []
+
+    def _on_status(snap_id: str, status: str) -> None:
+        captured.append((snap_id, status))
+
+    job = _make_mock_job(
+        snapshot_id="sd_abc",
+        statuses=["in_progress", "in_progress", "in_progress", "ready"],
+    )
+    await _poll_until_ready(
+        job,
+        request=FetchRequest(
+            platform="facebook",
+            urls=["https://facebook.com/x"],
+            status_callback=_on_status,
+        ),
+        timeout=10,
+        poll_interval=0,
+        platform_name="facebook",
+    )
+
+    # First synthetic 'triggered' before the loop, then transitions:
+    # 'triggered' -> 'in_progress' -> 'ready'. Three repeated 'in_progress'
+    # ticks coalesce.
+    assert captured == [
+        ("sd_abc", "triggered"),
+        ("sd_abc", "in_progress"),
+        ("sd_abc", "ready"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_status_callback_exceptions_are_swallowed():
+    """A buggy status_callback must NOT abort the fetch — the callback is
+    a side-channel for observability, not control flow."""
+    from syft_ingest.sources.brightdata import _poll_until_ready
+
+    def _broken(snap_id: str, status: str) -> None:
+        raise RuntimeError("DB write failed")
+
+    job = _make_mock_job(statuses=["in_progress", "ready"])
+    # Should complete normally despite the broken callback.
+    await _poll_until_ready(
+        job,
+        request=FetchRequest(
+            platform="instagram",
+            urls=["https://instagram.com/x/"],
+            status_callback=_broken,
+        ),
+        timeout=10,
+        poll_interval=0,
+        platform_name="instagram",
+    )
+
+
+@pytest.mark.asyncio
+async def test_poll_loop_raises_FetchTimeoutError_when_deadline_exceeded():
+    """If status never reaches 'ready' within `timeout`, FetchTimeoutError
+    fires with the snapshot_id in the message."""
+    from syft_ingest import FetchTimeoutError
+    from syft_ingest.sources.brightdata import _poll_until_ready
+
+    # Job that never returns 'ready'.
+    job = AsyncMock()
+    job.snapshot_id = "sd_timeout"
+
+    async def _always_in_progress(refresh: bool = True) -> str:
+        return "in_progress"
+
+    job.status = _always_in_progress
+
+    with pytest.raises(FetchTimeoutError) as excinfo:
+        await _poll_until_ready(
+            job,
+            request=FetchRequest(platform="facebook", urls=["https://facebook.com/x"]),
+            timeout=0,  # already expired — first deadline check fires
+            poll_interval=0,
+            platform_name="facebook",
+        )
+    assert "sd_timeout" in str(excinfo.value)
 
 
 def test_build_request_pops_status_and_cancel_callbacks_from_config():

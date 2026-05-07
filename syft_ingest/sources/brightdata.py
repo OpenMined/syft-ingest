@@ -11,11 +11,14 @@ Exceptions from the SDK are wrapped in domain-specific FetchError subclasses:
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import os
+import time
 from datetime import UTC, datetime
 from typing import Any
 
+import httpx
 from loguru import logger
 
 from syft_ingest.core.fetcher import (
@@ -69,6 +72,117 @@ def _default_request_timeout() -> int:
         except ValueError:
             pass
     return DEFAULT_REQUEST_TIMEOUT_SECONDS
+
+
+_BRIGHTDATA_CANCEL_URL = (
+    "https://api.brightdata.com/datasets/v3/snapshot/{snapshot_id}/cancel"
+)
+
+
+async def _cancel_snapshot(snapshot_id: str) -> None:
+    """Best-effort cancel of a BrightData snapshot.
+
+    POSTs to BrightData's cancel endpoint with the same Bearer token the SDK
+    uses (env var ``BRIGHTDATA_API_TOKEN``). Logs failures rather than raising:
+    callers see ``FetchCancelled`` as the contract surface, and a 4xx/5xx on
+    the cancel API does not change that — the snapshot may continue running
+    on BrightData's side, but the fetcher has stopped polling it either way.
+    """
+    token = os.getenv("BRIGHTDATA_API_TOKEN")
+    if not token:
+        logger.warning(
+            "BRIGHTDATA_API_TOKEN not set; cannot cancel snapshot {sid}",
+            sid=snapshot_id,
+        )
+        return
+
+    url = _BRIGHTDATA_CANCEL_URL.format(snapshot_id=snapshot_id)
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(
+                url, headers={"Authorization": f"Bearer {token}"}
+            )
+            response.raise_for_status()
+        logger.info("Cancelled BrightData snapshot {sid}", sid=snapshot_id)
+    except httpx.HTTPError as e:
+        logger.warning(
+            "Failed to cancel BrightData snapshot {sid}: {err}",
+            sid=snapshot_id,
+            err=e,
+        )
+
+
+async def _poll_until_ready(
+    job: Any,
+    *,
+    request: FetchRequest,
+    timeout: int,
+    poll_interval: int,
+    platform_name: str,
+) -> None:
+    """Poll a BrightData ScrapeJob until it reaches the 'ready' state.
+
+    Replaces the SDK's blocking ``job.wait(timeout, poll_interval)`` with an
+    explicit loop that fires ``request.status_callback`` on every status
+    transition. (Cancel handling and transient-error retry are added in
+    follow-up commits.)
+
+    Args:
+        job: A ``brightdata.scrapers.base.ScrapeJob`` (or any object with
+            ``.snapshot_id`` and an async ``.status(refresh=True)`` method).
+        request: The active FetchRequest, source of optional callbacks.
+        timeout: Total seconds before raising FetchTimeoutError.
+        poll_interval: Seconds between status() calls.
+        platform_name: Used for FetchError ``platform`` attribution.
+
+    Raises:
+        FetchError: Snapshot transitioned to ``error`` or ``failed``.
+        FetchTimeoutError: Snapshot did not reach ``ready`` before deadline.
+    """
+    snapshot_id: str = job.snapshot_id
+    last_status: str | None = None
+
+    def _emit_status(status: str) -> None:
+        """Fire status_callback only on transitions; swallow exceptions."""
+        nonlocal last_status
+        if status == last_status:
+            return
+        last_status = status
+        if request.status_callback is None:
+            return
+        try:
+            request.status_callback(snapshot_id, status)
+        except Exception as e:
+            logger.debug(
+                "status_callback raised for {sid}: {err}",
+                sid=snapshot_id,
+                err=e,
+            )
+
+    # Synthetic 'triggered' so callers see immediate signal even before the
+    # first /progress/ call returns.
+    _emit_status("triggered")
+
+    deadline = time.monotonic() + timeout
+    while True:
+        status_str = await job.status(refresh=True)
+        _emit_status(status_str)
+
+        if status_str == "ready":
+            return
+        if status_str in ("error", "failed"):
+            raise FetchError(
+                f"Snapshot {snapshot_id} failed with status: {status_str}",
+                platform=platform_name,
+            )
+
+        if time.monotonic() >= deadline:
+            raise FetchTimeoutError(
+                f"Snapshot {snapshot_id} polling exceeded {timeout}s",
+                platform=platform_name,
+            )
+
+        await asyncio.sleep(poll_interval)
 
 
 class BrightDataFetcher:
@@ -273,10 +387,12 @@ class BrightDataFetcher:
                         timeout=timeout,
                         interval=poll_interval,
                     )
-                    await job.wait(
+                    await _poll_until_ready(
+                        job,
+                        request=request,
                         timeout=timeout,
                         poll_interval=poll_interval,
-                        verbose=False,
+                        platform_name=platform_name,
                     )
                     logger.debug("Job {job_id} completed", job_id=job.snapshot_id)
 
