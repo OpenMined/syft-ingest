@@ -34,7 +34,10 @@ from syft_ingest.core.models import (
     ContentItem,
     SourceType,
 )
-from syft_ingest.sources._meta_utils import derive_title
+from syft_ingest.sources._meta_utils import (
+    derive_title_from_post,
+    fallback_title_for_empty_post,
+)
 
 # Import the brightdata SDK
 try:
@@ -644,7 +647,10 @@ class BrightDataFetcher:
                         post_id = str(post.get("id", ""))
                         items.append(
                             ContentItem(
-                                title=derive_title(text) or post_id,
+                                title=derive_title_from_post(
+                                    post, ("caption", "description", "text")
+                                )
+                                or fallback_title_for_empty_post("Instagram", post_id),
                                 author=username,
                                 text=text,
                                 url=post.get("url"),
@@ -667,7 +673,10 @@ class BrightDataFetcher:
                     post_id = entry.get("post_id") or entry.get("shortcode") or ""
                     items.append(
                         ContentItem(
-                            title=derive_title(text) or post_id,
+                            title=derive_title_from_post(
+                                entry, ("description", "caption", "text")
+                            )
+                            or fallback_title_for_empty_post("Instagram", post_id),
                             author=entry.get("user_posted") or "",
                             text=text,
                             url=entry.get("url") or "",
@@ -706,7 +715,16 @@ class BrightDataFetcher:
                 post_id = post.get("post_id") or ""
                 items.append(
                     ContentItem(
-                        title=derive_title(text) or post_id,
+                        title=derive_title_from_post(
+                            post,
+                            (
+                                "content",
+                                "attached_post_text",
+                                "description",
+                                "caption",
+                            ),
+                        )
+                        or fallback_title_for_empty_post("Facebook", post_id),
                         author=post.get("page_name")
                         or post.get("user_username_raw")
                         or "",

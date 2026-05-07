@@ -691,8 +691,12 @@ def test_parse_facebook_video_response(brightdata_fetcher):
 # leaked through to source-link rendering ("• 3185652631516770 https://…")
 # and broke topic clustering, which fed numeric IDs to the labeling LLM.
 #
-# After the fix, title is derived from the post body via derive_title(),
-# falling back to post_id only when the body is empty (e.g. media-only post).
+# After the fix, title is derived from the post body via derive_title().
+# When the body is empty (e.g. media-only post), the fallback is a
+# human-readable platform-prefixed string ("Facebook post 12345..."), never
+# a bare numeric ID. The prefix gives downstream consumers — RAG citations,
+# source-link bullets, topic clustering — a stable, recognizable shape that
+# clusters predictably and reads sensibly to humans.
 # ---------------------------------------------------------------------------
 
 
@@ -718,9 +722,37 @@ def test_facebook_title_derives_from_body_not_post_id(brightdata_fetcher):
     )
 
 
-def test_facebook_title_falls_back_to_post_id_when_body_empty(brightdata_fetcher):
-    """Media-only Facebook posts (no text body) fall back to post_id so the
-    item still has a non-empty identifier for downstream stable IDs."""
+def test_facebook_title_walks_to_description_when_content_empty(
+    brightdata_fetcher,
+):
+    """A media-only Facebook post often has empty `content` but carries text
+    in `description` or `caption`. The parser walks the field list and picks
+    the first usable one rather than jumping straight to the prefixed ID
+    fallback."""
+    raw_data = [
+        {
+            "post_id": "1234567890123456",
+            "content": "",
+            "description": "Behind the scenes of our research lab",
+            "date_posted": "2026-01-01T00:00:00Z",
+            "page_name": "OpenMined",
+            "url": "https://facebook.com/openminedorg/posts/1234567890123456",
+        }
+    ]
+
+    items = brightdata_fetcher._parse_response(raw_data, "facebook")
+
+    assert len(items) == 1
+    assert items[0].title == "Behind the scenes of our research lab"
+
+
+def test_facebook_title_falls_back_to_prefixed_post_id_when_body_empty(
+    brightdata_fetcher,
+):
+    """Media-only Facebook posts (no text body) fall back to a human-readable
+    'Facebook post <id>' string rather than a bare numeric ID. The prefix
+    keeps downstream consumers (RAG citations, source-link bullets, topic
+    clustering) sane when the post itself has no text."""
     raw_data = [
         {
             "post_id": "9999999999999999",
@@ -734,7 +766,31 @@ def test_facebook_title_falls_back_to_post_id_when_body_empty(brightdata_fetcher
     items = brightdata_fetcher._parse_response(raw_data, "facebook")
 
     assert len(items) == 1
-    assert items[0].title == "9999999999999999"
+    assert items[0].title == "Facebook post 9999999999999999"
+    assert items[0].title != "9999999999999999", (
+        "Title must not be the raw numeric post_id"
+    )
+
+
+def test_facebook_title_falls_back_to_untitled_when_post_id_also_missing(
+    brightdata_fetcher,
+):
+    """Pathological case: post has no body AND no post_id. Title is still a
+    human-readable string, never empty."""
+    raw_data = [
+        {
+            "post_id": "",
+            "content": "",
+            "date_posted": "2020-09-23T00:00:00Z",
+            "page_name": "OpenMined",
+            "url": "https://facebook.com/openminedorg/posts/x",
+        }
+    ]
+
+    items = brightdata_fetcher._parse_response(raw_data, "facebook")
+
+    assert len(items) == 1
+    assert items[0].title == "Untitled Facebook post"
 
 
 def test_facebook_title_truncated_for_long_body(brightdata_fetcher):
@@ -783,11 +839,11 @@ def test_instagram_search_title_derives_from_description(brightdata_fetcher):
     assert items[0].title == "Behind the scenes of our latest video shoot"
 
 
-def test_instagram_search_title_falls_back_to_post_id_when_empty(
+def test_instagram_search_title_falls_back_to_prefixed_post_id_when_empty(
     brightdata_fetcher,
 ):
-    """Instagram search-format posts with no description fall back to
-    post_id (then shortcode) so the item still has a stable identifier."""
+    """Instagram search-format posts with no description fall back to a
+    human-readable 'Instagram post <id>' string rather than a bare ID."""
     raw_data = [
         {
             "post_id": "xyz789",
@@ -802,7 +858,7 @@ def test_instagram_search_title_falls_back_to_post_id_when_empty(
     items = brightdata_fetcher._parse_response(raw_data, "instagram")
 
     assert len(items) == 1
-    assert items[0].title == "xyz789"
+    assert items[0].title == "Instagram post xyz789"
 
 
 def test_instagram_legacy_posts_title_derives_from_caption(brightdata_fetcher):
@@ -828,10 +884,11 @@ def test_instagram_legacy_posts_title_derives_from_caption(brightdata_fetcher):
     assert items[0].title == "Sunset over the cliffs"
 
 
-def test_instagram_legacy_posts_title_falls_back_when_caption_empty(
+def test_instagram_legacy_posts_title_falls_back_to_prefixed_id_when_caption_empty(
     brightdata_fetcher,
 ):
-    """Instagram legacy posts with no caption fall back to the numeric id."""
+    """Instagram legacy posts with no caption fall back to a human-readable
+    'Instagram post <id>' string, never a bare numeric ID."""
     raw_data = [
         {
             "account": "creator",
@@ -849,7 +906,7 @@ def test_instagram_legacy_posts_title_falls_back_when_caption_empty(
     items = brightdata_fetcher._parse_response(raw_data, "instagram")
 
     assert len(items) == 1
-    assert items[0].title == "555"
+    assert items[0].title == "Instagram post 555"
 
 
 def test_empty_response_returns_empty_list(brightdata_fetcher):

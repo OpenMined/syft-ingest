@@ -113,3 +113,44 @@ def derive_title(text: str, max_length: int = 80) -> str:
     if len(parts) > 1:
         return parts[0] + "..."
     return truncated[: max_length - 3] + "..."
+
+
+def derive_title_from_post(
+    post: dict, candidate_fields: tuple[str, ...], max_length: int = 80
+) -> str:
+    """Walk candidate text fields on a post dict, return the first usable title.
+
+    Tries each field in order. Skips non-string values, empty strings, and
+    fields whose first line yields an empty title after stripping. Returns
+    the empty string if no field produces a usable title — callers chain
+    this with `fallback_title_for_empty_post` for the final platform-prefixed
+    fallback.
+
+    Useful because BrightData responses for media-only posts often have an
+    empty `content` field but still carry a usable text fragment in
+    `description`, `caption`, or platform-specific fields. The local Meta
+    export parser already walks fields in this style; this helper brings
+    the same robustness to the BrightData path.
+    """
+    for field in candidate_fields:
+        value = post.get(field)
+        if isinstance(value, str):
+            title = derive_title(value, max_length=max_length)
+            if title:
+                return title
+    return ""
+
+
+def fallback_title_for_empty_post(platform: str, post_id: str) -> str:
+    """Build the title used when a post has no usable text body.
+
+    Returns a human-readable, platform-prefixed string instead of a bare
+    numeric ID. Bare IDs poison downstream consumers — e.g. topic clustering
+    feeds titles to an LLM, and a pile of 16-digit numbers yields useless
+    labels (or gets rejected as placeholder garbage). The prefix gives
+    every fallback row a stable, recognizable shape that clusters predictably
+    and reads sensibly in source-link bullets.
+    """
+    if post_id:
+        return f"{platform} post {post_id}"
+    return f"Untitled {platform} post"
