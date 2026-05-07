@@ -118,6 +118,25 @@ class FetchRequest(BaseModel):
         exclude=True,
         description="Optional callable(items_count: int) called after each item is fetched",
     )
+    status_callback: Any | None = Field(
+        default=None,
+        exclude=True,
+        description=(
+            "Optional callable(snapshot_id: str, remote_status: str) called on every "
+            "status transition during BrightData polling. Use for live-status reporting "
+            "in an external orchestrator (e.g. admin UI). Synchronous; called from the "
+            "async poll loop, so keep it fast (non-blocking writes only)."
+        ),
+    )
+    cancel_callback: Any | None = Field(
+        default=None,
+        exclude=True,
+        description=(
+            "Optional callable() -> bool consulted on every poll tick. If True, "
+            "the fetcher cancels the remote snapshot and raises FetchCancelled. "
+            "Synchronous; called from the async poll loop."
+        ),
+    )
     config: FetchConfig | dict[str, Any] = Field(
         default_factory=dict,
         description="Fetcher-specific options (validated via FetchConfig, converted to dict)",
