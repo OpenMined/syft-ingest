@@ -23,6 +23,7 @@ from loguru import logger
 
 from syft_ingest.core.fetcher import (
     FetchAuthError,
+    FetchCancelled,
     FetchEmptyResultError,
     FetchError,
     FetchRequest,
@@ -136,6 +137,8 @@ async def _poll_until_ready(
         platform_name: Used for FetchError ``platform`` attribution.
 
     Raises:
+        FetchCancelled: ``cancel_callback`` returned True; remote snapshot
+            has been signalled to cancel (best-effort).
         FetchError: Snapshot transitioned to ``error`` or ``failed``.
         FetchTimeoutError: Snapshot did not reach ``ready`` before deadline.
     """
@@ -173,6 +176,16 @@ async def _poll_until_ready(
         if status_str in ("error", "failed"):
             raise FetchError(
                 f"Snapshot {snapshot_id} failed with status: {status_str}",
+                platform=platform_name,
+            )
+
+        # Cancel check happens AFTER status read so a same-tick 'ready' wins
+        # over a Remove click — we don't want to cancel a snapshot whose data
+        # has already been collected and is one fetch() call away.
+        if request.cancel_callback is not None and request.cancel_callback():
+            await _cancel_snapshot(snapshot_id)
+            raise FetchCancelled(
+                f"Cancellation requested for snapshot {snapshot_id}",
                 platform=platform_name,
             )
 

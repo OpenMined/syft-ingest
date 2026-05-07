@@ -328,3 +328,142 @@ def test_build_request_pops_status_and_cancel_callbacks_from_config():
     # extractor-specific options).
     assert "status_callback" not in request.config
     assert "cancel_callback" not in request.config
+
+
+@pytest.mark.asyncio
+async def test_cancel_callback_returning_true_raises_FetchCancelled(monkeypatch):
+    """When cancel_callback returns True mid-poll, the loop calls
+    _cancel_snapshot and raises FetchCancelled."""
+    from syft_ingest.sources.brightdata import _poll_until_ready
+
+    monkeypatch.setenv("BRIGHTDATA_API_TOKEN", "test-token")
+
+    job = _make_mock_job(
+        snapshot_id="sd_cancelme", statuses=["in_progress", "in_progress"]
+    )
+
+    cancel_calls = {"n": 0}
+
+    def _cancel_after_first_tick() -> bool:
+        cancel_calls["n"] += 1
+        return cancel_calls["n"] >= 1  # True from the first check
+
+    # Mock httpx so we can verify _cancel_snapshot got called.
+    mock_response = MagicMock(spec=httpx.Response)
+    mock_response.raise_for_status = MagicMock()
+    mock_client = AsyncMock()
+    mock_client.post = AsyncMock(return_value=mock_response)
+    mock_client_cls = MagicMock()
+    mock_client_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client_cls.return_value.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("syft_ingest.sources.brightdata.httpx.AsyncClient", mock_client_cls):
+        with pytest.raises(FetchCancelled) as excinfo:
+            await _poll_until_ready(
+                job,
+                request=FetchRequest(
+                    platform="facebook",
+                    urls=["https://facebook.com/x"],
+                    cancel_callback=_cancel_after_first_tick,
+                ),
+                timeout=10,
+                poll_interval=0,
+                platform_name="facebook",
+            )
+
+    assert "sd_cancelme" in str(excinfo.value)
+    # Cancel API was actually called.
+    mock_client.post.assert_awaited_once()
+    cancel_url = mock_client.post.await_args.args[0]
+    assert cancel_url.endswith("/snapshot/sd_cancelme/cancel")
+
+
+@pytest.mark.asyncio
+async def test_cancel_on_same_tick_as_ready_loses_to_ready(monkeypatch):
+    """If cancel_callback would return True but the SAME tick reports 'ready',
+    the snapshot completes normally (no cancel API call, no FetchCancelled).
+    Status read is sequenced BEFORE the cancel check for exactly this reason."""
+    from syft_ingest.sources.brightdata import _poll_until_ready
+
+    monkeypatch.setenv("BRIGHTDATA_API_TOKEN", "test-token")
+
+    job = _make_mock_job(snapshot_id="sd_winrace", statuses=["ready"])
+
+    def _always_cancel() -> bool:
+        return True
+
+    mock_client_cls = MagicMock()
+    with patch("syft_ingest.sources.brightdata.httpx.AsyncClient", mock_client_cls):
+        # Should NOT raise FetchCancelled — ready wins.
+        await _poll_until_ready(
+            job,
+            request=FetchRequest(
+                platform="instagram",
+                urls=["https://instagram.com/x/"],
+                cancel_callback=_always_cancel,
+            ),
+            timeout=10,
+            poll_interval=0,
+            platform_name="instagram",
+        )
+
+    # Cancel API was never invoked.
+    mock_client_cls.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_cancel_callback_none_skipped(monkeypatch):
+    """Backward compat: a request without cancel_callback never invokes
+    httpx and never raises FetchCancelled."""
+    from syft_ingest.sources.brightdata import _poll_until_ready
+
+    monkeypatch.setenv("BRIGHTDATA_API_TOKEN", "test-token")
+    job = _make_mock_job(statuses=["in_progress", "ready"])
+
+    mock_client_cls = MagicMock()
+    with patch("syft_ingest.sources.brightdata.httpx.AsyncClient", mock_client_cls):
+        await _poll_until_ready(
+            job,
+            request=FetchRequest(platform="facebook", urls=["https://facebook.com/x"]),
+            timeout=10,
+            poll_interval=0,
+            platform_name="facebook",
+        )
+    mock_client_cls.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_cancel_api_failure_does_not_mask_FetchCancelled(monkeypatch):
+    """If the cancel API itself returns 4xx/5xx, _cancel_snapshot logs and
+    swallows it — the loop still raises FetchCancelled so callers see a
+    coherent contract."""
+    from syft_ingest.sources.brightdata import _poll_until_ready
+
+    monkeypatch.setenv("BRIGHTDATA_API_TOKEN", "test-token")
+    job = _make_mock_job(snapshot_id="sd_apifail", statuses=["in_progress"])
+
+    mock_response = MagicMock(spec=httpx.Response)
+    mock_response.raise_for_status = MagicMock(
+        side_effect=httpx.HTTPStatusError(
+            "500", request=MagicMock(), response=mock_response
+        )
+    )
+    mock_client = AsyncMock()
+    mock_client.post = AsyncMock(return_value=mock_response)
+    mock_client_cls = MagicMock()
+    mock_client_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client_cls.return_value.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("syft_ingest.sources.brightdata.httpx.AsyncClient", mock_client_cls):
+        with pytest.raises(FetchCancelled):
+            await _poll_until_ready(
+                job,
+                request=FetchRequest(
+                    platform="facebook",
+                    urls=["https://facebook.com/x"],
+                    cancel_callback=lambda: True,
+                ),
+                timeout=10,
+                poll_interval=0,
+                platform_name="facebook",
+            )
