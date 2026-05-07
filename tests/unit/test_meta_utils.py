@@ -2,6 +2,7 @@ from syft_ingest.sources._meta_utils import (
     content_hash,
     derive_title,
     derive_title_from_post,
+    extract_first_text_field,
     extract_hashtags,
     extract_mentions,
     fallback_title_for_empty_post,
@@ -189,6 +190,46 @@ def test_derive_title_from_post_first_line_only():
         "content": "First line headline\n\nSecond paragraph that should be ignored",
     }
     assert derive_title_from_post(post, ("content",)) == "First line headline"
+
+
+def test_extract_first_text_field_returns_first_non_empty():
+    """Returns the full untruncated string from the first non-empty field."""
+    post = {
+        "content": "",
+        "description": "Behind the scenes\n\nA second paragraph follows.",
+        "caption": "Should not be reached",
+    }
+    # Untruncated, full content (incl. newlines) — unlike derive_title which
+    # truncates and takes first line only.
+    assert (
+        extract_first_text_field(post, ("content", "description", "caption"))
+        == "Behind the scenes\n\nA second paragraph follows."
+    )
+
+
+def test_extract_first_text_field_skips_whitespace_only():
+    """Whitespace-only fields don't count as 'usable' — same rule as title."""
+    post = {"content": "   ", "description": "Real body text"}
+    assert (
+        extract_first_text_field(post, ("content", "description")) == "Real body text"
+    )
+
+
+def test_extract_first_text_field_returns_empty_when_all_empty():
+    """Mirrors derive_title_from_post — caller decides on the fallback."""
+    post = {"content": "", "description": "", "caption": ""}
+    assert extract_first_text_field(post, ("content", "description", "caption")) == ""
+
+
+def test_extract_first_text_field_skips_non_string_values():
+    """Non-string values (e.g. lists of media items) are skipped, not crashed on."""
+    post = {
+        "content": ["media-item-1", "media-item-2"],
+        "description": "Actual body text",
+    }
+    assert (
+        extract_first_text_field(post, ("content", "description")) == "Actual body text"
+    )
 
 
 def test_fallback_title_for_empty_post_with_id():

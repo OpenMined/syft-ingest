@@ -141,6 +141,28 @@ def derive_title_from_post(
     return ""
 
 
+def extract_first_text_field(post: dict, candidate_fields: tuple[str, ...]) -> str:
+    """Walk candidate text fields and return the first non-empty raw string.
+
+    Pairs with `derive_title_from_post`, which truncates the first non-empty
+    field to 80 chars for use as a title. This helper returns the *full*
+    untruncated string for use as the post body — so RAG / embedding
+    consumers see the actual content, not just the headline.
+
+    BrightData responses for media-only posts often have an empty `content`
+    field but carry usable text in `description` or `caption`. Without this
+    helper, downstream consumers see a meaningful title (from the title
+    walk) but an empty body — they can't actually retrieve the post.
+
+    Returns "" when every candidate field is missing, non-string, or empty.
+    """
+    for field in candidate_fields:
+        value = post.get(field)
+        if isinstance(value, str) and value.strip():
+            return value
+    return ""
+
+
 def fallback_title_for_empty_post(platform: str, post_id: str) -> str:
     """Build the title used when a post has no usable text body.
 

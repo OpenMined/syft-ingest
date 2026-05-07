@@ -746,6 +746,37 @@ def test_facebook_title_walks_to_description_when_content_empty(
     assert items[0].title == "Behind the scenes of our research lab"
 
 
+def test_facebook_text_also_walks_to_description_when_content_empty(
+    brightdata_fetcher,
+):
+    """The `text` body field walks the same fallback list as `title`. A
+    media-only post whose `content` is empty but `description` carries the
+    body should produce a ContentItem with non-empty text — otherwise RAG /
+    embedding consumers see only a title and never the actual content."""
+    body_text = (
+        "Behind the scenes of our research lab\n\n"
+        "A longer paragraph with the full post content "
+        "that should be available to RAG and embedding pipelines."
+    )
+    raw_data = [
+        {
+            "post_id": "1234567890123456",
+            "content": "",
+            "description": body_text,
+            "date_posted": "2026-01-01T00:00:00Z",
+            "page_name": "OpenMined",
+            "url": "https://facebook.com/openminedorg/posts/1234567890123456",
+        }
+    ]
+
+    items = brightdata_fetcher._parse_response(raw_data, "facebook")
+
+    assert len(items) == 1
+    # Title is the first-line truncation; text is the full body, untruncated.
+    assert items[0].title == "Behind the scenes of our research lab"
+    assert items[0].text == body_text
+
+
 def test_facebook_title_falls_back_to_prefixed_post_id_when_body_empty(
     brightdata_fetcher,
 ):
