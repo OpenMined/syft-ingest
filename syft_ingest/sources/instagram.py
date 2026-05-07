@@ -178,7 +178,11 @@ def _extract_brightdata_post_text(post: dict[str, Any]) -> str:
     for key in ("description", "caption", "text", "title", "content"):
         value = post.get(key)
         if isinstance(value, str) and value.strip():
-            return value.strip()
+            stripped = value.strip()
+            # BrightData sometimes puts the numeric post ID in "title" — skip it
+            if stripped.isdigit():
+                continue
+            return stripped
 
     post_content = post.get("post_content")
     if isinstance(post_content, list):
