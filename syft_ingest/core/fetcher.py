@@ -309,3 +309,14 @@ class FetchEmptyResultError(FetchError):
     This is distinct from a timeout or auth failure — the upstream service
     responded, but the result set was empty (e.g. the profile has no posts).
     """
+
+
+class FetchCancelled(FetchError):
+    """Caller-requested cancellation observed mid-fetch.
+
+    Raised when a ``cancel_callback`` returns True during the poll loop and
+    the fetcher has notified the upstream service to abort the snapshot.
+    Distinct from ``FetchTimeoutError`` (deadline exceeded) and ``FetchError``
+    (upstream failure). Callers can ``except FetchCancelled`` to finalize a
+    cancellation without treating it as an error.
+    """
