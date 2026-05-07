@@ -74,3 +74,30 @@ def test_fetchrequest_callbacks_excluded_from_serialization():
     dumped = req.model_dump()
     assert "status_callback" not in dumped
     assert "cancel_callback" not in dumped
+
+
+def test_build_request_pops_status_and_cancel_callbacks_from_config():
+    """_build_request must lift status_callback / cancel_callback out of the
+    `config` kwargs dict and pass them as top-level FetchRequest fields, so
+    they reach the fetcher's poll loop instead of being treated as opaque
+    extractor config (which would be ignored)."""
+    from syft_ingest.core.gather import _build_request
+
+    def _on_status(s: str, r: str) -> None: ...
+    def _on_cancel() -> bool:
+        return False
+
+    fetcher, request = _build_request(
+        platform="instagram",
+        urls=["https://instagram.com/test/"],
+        author=None,
+        status_callback=_on_status,
+        cancel_callback=_on_cancel,
+    )
+
+    assert request.status_callback is _on_status
+    assert request.cancel_callback is _on_cancel
+    # And the callbacks must NOT linger in config (would pollute the
+    # extractor-specific options).
+    assert "status_callback" not in request.config
+    assert "cancel_callback" not in request.config
