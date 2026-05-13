@@ -425,6 +425,8 @@ class BrightDataFetcher:
             ) as client:
                 url = urls[0]
                 num_of_posts = request.config.get("num_of_posts")
+                posts_to_not_include = request.config.get("posts_to_not_include")
+                post_type = request.config.get("post_type")
 
                 if platform_name == "instagram":
                     # Instagram: use search scraper (supports num_of_posts server-side)
@@ -442,6 +444,12 @@ class BrightDataFetcher:
                         search_kwargs["start_date"] = sdk_start_date
                     if sdk_end_date:
                         search_kwargs["end_date"] = sdk_end_date
+                    # Empty list is "no IDs to skip" → omit the kwarg so the SDK
+                    # does not see a meaningless [] payload.
+                    if posts_to_not_include:
+                        search_kwargs["posts_to_not_include"] = posts_to_not_include
+                    if post_type:
+                        search_kwargs["post_type"] = post_type
                     result = await client.search.instagram.posts(**search_kwargs)
                     raw_data = result.data
                     snapshot_id = result.snapshot_id
@@ -464,6 +472,13 @@ class BrightDataFetcher:
                         trigger_kwargs["start_date"] = sdk_start_date
                     if sdk_end_date:
                         trigger_kwargs["end_date"] = sdk_end_date
+                    # Empty list is "no IDs to skip" → omit the kwarg so the SDK
+                    # does not see a meaningless [] payload.
+                    if posts_to_not_include:
+                        trigger_kwargs["posts_to_not_include"] = posts_to_not_include
+                    # post_type is not forwarded for Facebook: the FB
+                    # posts_by_profile_trigger SDK method does not expose a
+                    # post-type filter today. Caller passes it harmlessly.
                     job = await trigger_method(**trigger_kwargs)
                     logger.debug("Scrape job created: {job_id}", job_id=job.snapshot_id)
 

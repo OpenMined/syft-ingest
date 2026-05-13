@@ -1377,3 +1377,270 @@ async def test_fetch_async_passes_request_timeout_to_brightdata_client(valid_tok
     call_kwargs = mock_client_class.call_args.kwargs
     assert call_kwargs.get("token") == "test-token"
     assert call_kwargs.get("timeout") == 120
+
+
+# ---- posts_to_not_include passthrough tests ----
+
+
+def _ig_search_mocks(snapshot_id: str = "snap-ig"):
+    """Build the IG search-scraper mock pair (result + scraper)."""
+    from unittest.mock import MagicMock
+
+    mock_result = MagicMock()
+    mock_result.snapshot_id = snapshot_id
+    mock_result.data = [
+        {
+            "post_id": "ig1",
+            "description": "Post",
+            "user_posted": "testuser",
+            "likes": 1,
+            "num_comments": 0,
+            "date_posted": "2026-04-02T00:00:00Z",
+            "content_type": "Image",
+            "photos": [],
+            "url": "https://instagram.com/p/ig1",
+        }
+    ]
+    mock_search_ig = AsyncMock()
+    mock_search_ig.posts = AsyncMock(return_value=mock_result)
+    return mock_result, mock_search_ig
+
+
+def _fb_trigger_mocks(snapshot_id: str = "job-fb"):
+    """Build the FB trigger/poll mock pair (job + scraper)."""
+    mock_job = AsyncMock()
+    mock_job.snapshot_id = snapshot_id
+    mock_job.status = AsyncMock(return_value="ready")
+    mock_job.fetch = AsyncMock(
+        return_value=[
+            {
+                "post_id": "p1",
+                "content": "Post",
+                "date_posted": "2026-04-02T00:00:00Z",
+                "page_name": "Test Page",
+                "url": "https://facebook.com/p/p1",
+            }
+        ]
+    )
+    mock_scraper = AsyncMock()
+    mock_scraper.posts_by_profile_trigger = AsyncMock(return_value=mock_job)
+    return mock_job, mock_scraper
+
+
+@pytest.mark.asyncio
+async def test_instagram_search_includes_posts_to_not_include_when_provided(
+    brightdata_fetcher,
+):
+    """When config.posts_to_not_include is set, it is passed to search.instagram.posts."""
+    request = FetchRequest(
+        platform=Platform.INSTAGRAM,
+        extractor="brightdata",
+        urls=["https://instagram.com/testuser"],
+        config={"posts_to_not_include": ["abc123", "def456"]},
+    )
+
+    _, mock_search_ig = _ig_search_mocks()
+    mock_client = AsyncMock()
+    mock_client.search.instagram = mock_search_ig
+
+    with patch("syft_ingest.sources.brightdata.BrightDataClient") as mock_client_class:
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+        await brightdata_fetcher.fetch_async(request)
+
+    call_kwargs = mock_search_ig.posts.call_args[1]
+    assert call_kwargs.get("posts_to_not_include") == ["abc123", "def456"]
+
+
+@pytest.mark.asyncio
+async def test_instagram_search_omits_posts_to_not_include_when_none(
+    brightdata_fetcher,
+):
+    """When posts_to_not_include is None, it is NOT passed to the SDK."""
+    request = FetchRequest(
+        platform=Platform.INSTAGRAM,
+        extractor="brightdata",
+        urls=["https://instagram.com/testuser"],
+    )
+
+    _, mock_search_ig = _ig_search_mocks()
+    mock_client = AsyncMock()
+    mock_client.search.instagram = mock_search_ig
+
+    with patch("syft_ingest.sources.brightdata.BrightDataClient") as mock_client_class:
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+        await brightdata_fetcher.fetch_async(request)
+
+    call_kwargs = mock_search_ig.posts.call_args[1]
+    assert "posts_to_not_include" not in call_kwargs
+
+
+@pytest.mark.asyncio
+async def test_instagram_search_omits_posts_to_not_include_when_empty_list(
+    brightdata_fetcher,
+):
+    """Empty list is treated the same as None — kwarg must not reach the SDK."""
+    request = FetchRequest(
+        platform=Platform.INSTAGRAM,
+        extractor="brightdata",
+        urls=["https://instagram.com/testuser"],
+        config={"posts_to_not_include": []},
+    )
+
+    _, mock_search_ig = _ig_search_mocks()
+    mock_client = AsyncMock()
+    mock_client.search.instagram = mock_search_ig
+
+    with patch("syft_ingest.sources.brightdata.BrightDataClient") as mock_client_class:
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+        await brightdata_fetcher.fetch_async(request)
+
+    call_kwargs = mock_search_ig.posts.call_args[1]
+    assert "posts_to_not_include" not in call_kwargs
+
+
+@pytest.mark.asyncio
+async def test_facebook_trigger_includes_posts_to_not_include_when_provided(
+    brightdata_fetcher,
+):
+    """When config.posts_to_not_include is set, it is passed to posts_by_profile_trigger."""
+    request = FetchRequest(
+        platform=Platform.FACEBOOK,
+        extractor="brightdata",
+        urls=["https://facebook.com/testuser"],
+        config={"posts_to_not_include": ["fb1", "fb2"]},
+    )
+
+    _, mock_scraper = _fb_trigger_mocks()
+    mock_client = AsyncMock()
+    mock_client.scrape.facebook = mock_scraper
+
+    with patch("syft_ingest.sources.brightdata.BrightDataClient") as mock_client_class:
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+        await brightdata_fetcher.fetch_async(request)
+
+    call_kwargs = mock_scraper.posts_by_profile_trigger.call_args[1]
+    assert call_kwargs.get("posts_to_not_include") == ["fb1", "fb2"]
+
+
+@pytest.mark.asyncio
+async def test_facebook_trigger_omits_posts_to_not_include_when_none(
+    brightdata_fetcher,
+):
+    """When posts_to_not_include is None, it is NOT passed to the SDK."""
+    request = FetchRequest(
+        platform=Platform.FACEBOOK,
+        extractor="brightdata",
+        urls=["https://facebook.com/testuser"],
+    )
+
+    _, mock_scraper = _fb_trigger_mocks()
+    mock_client = AsyncMock()
+    mock_client.scrape.facebook = mock_scraper
+
+    with patch("syft_ingest.sources.brightdata.BrightDataClient") as mock_client_class:
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+        await brightdata_fetcher.fetch_async(request)
+
+    call_kwargs = mock_scraper.posts_by_profile_trigger.call_args[1]
+    assert "posts_to_not_include" not in call_kwargs
+
+
+# ---- post_type passthrough tests ----
+
+
+@pytest.mark.asyncio
+async def test_instagram_search_includes_post_type_when_provided(brightdata_fetcher):
+    """When config.post_type is set, it is passed to search.instagram.posts."""
+    request = FetchRequest(
+        platform=Platform.INSTAGRAM,
+        extractor="brightdata",
+        urls=["https://instagram.com/testuser"],
+        config={"post_type": "Reel"},
+    )
+
+    _, mock_search_ig = _ig_search_mocks()
+    mock_client = AsyncMock()
+    mock_client.search.instagram = mock_search_ig
+
+    with patch("syft_ingest.sources.brightdata.BrightDataClient") as mock_client_class:
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+        await brightdata_fetcher.fetch_async(request)
+
+    call_kwargs = mock_search_ig.posts.call_args[1]
+    assert call_kwargs.get("post_type") == "Reel"
+
+
+@pytest.mark.asyncio
+async def test_instagram_search_omits_post_type_when_none(brightdata_fetcher):
+    """When post_type is None, it is NOT passed to the SDK (omit-when-omitted)."""
+    request = FetchRequest(
+        platform=Platform.INSTAGRAM,
+        extractor="brightdata",
+        urls=["https://instagram.com/testuser"],
+    )
+
+    _, mock_search_ig = _ig_search_mocks()
+    mock_client = AsyncMock()
+    mock_client.search.instagram = mock_search_ig
+
+    with patch("syft_ingest.sources.brightdata.BrightDataClient") as mock_client_class:
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+        await brightdata_fetcher.fetch_async(request)
+
+    call_kwargs = mock_search_ig.posts.call_args[1]
+    assert "post_type" not in call_kwargs
+
+
+@pytest.mark.asyncio
+async def test_facebook_trigger_never_forwards_post_type(brightdata_fetcher):
+    """post_type is currently FB-unsupported by the SDK — must not leak into trigger kwargs.
+
+    Caller can pass it harmlessly on a platform-agnostic FetchConfig; on FB we
+    silently drop it. The day the FB SDK gains a post-type filter, this test
+    becomes the regression guard for the plumbing.
+    """
+    request = FetchRequest(
+        platform=Platform.FACEBOOK,
+        extractor="brightdata",
+        urls=["https://facebook.com/testuser"],
+        config={"post_type": "Reel"},
+    )
+
+    _, mock_scraper = _fb_trigger_mocks()
+    mock_client = AsyncMock()
+    mock_client.scrape.facebook = mock_scraper
+
+    with patch("syft_ingest.sources.brightdata.BrightDataClient") as mock_client_class:
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+        await brightdata_fetcher.fetch_async(request)
+
+    call_kwargs = mock_scraper.posts_by_profile_trigger.call_args[1]
+    assert "post_type" not in call_kwargs
+
+
+# ---- FetchConfig field validation ----
+
+
+def test_fetch_config_accepts_posts_to_not_include_list():
+    """FetchConfig.posts_to_not_include accepts list[str]."""
+    from syft_ingest.core.fetcher import FetchConfig
+
+    cfg = FetchConfig(posts_to_not_include=["a", "b", "c"])
+    assert cfg.posts_to_not_include == ["a", "b", "c"]
+
+
+def test_fetch_config_accepts_post_type_string():
+    """FetchConfig.post_type accepts a string like 'Post' or 'Reel'."""
+    from syft_ingest.core.fetcher import FetchConfig
+
+    cfg = FetchConfig(post_type="Reel")
+    assert cfg.post_type == "Reel"
+
+
+def test_fetch_config_defaults_new_fields_to_none():
+    """When unspecified, both new fields default to None."""
+    from syft_ingest.core.fetcher import FetchConfig
+
+    cfg = FetchConfig()
+    assert cfg.posts_to_not_include is None
+    assert cfg.post_type is None
