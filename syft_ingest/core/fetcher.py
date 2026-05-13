@@ -42,6 +42,13 @@ class FetchConfig(BaseModel):
         timeout: Total scrape job timeout in seconds (default: 180)
         poll_interval: Check job completion every N seconds (default: 5)
         num_of_posts: Limit posts fetched (default: no limit)
+        posts_to_not_include: Post IDs already ingested; the scraper skips
+            them server-side so we avoid paying for duplicate records.
+            Useful for incremental polling: pass the IDs we already have to
+            avoid re-fetching them.
+        post_type: Filter by post type. Instagram supports "Post" or "Reel";
+            omit for both. Ignored on platforms that do not expose this
+            filter server-side.
     """
 
     # YouTube options
@@ -61,6 +68,22 @@ class FetchConfig(BaseModel):
     )
     poll_interval: int | None = Field(
         default=None, ge=1, description="Job status check interval in seconds"
+    )
+    posts_to_not_include: list[str] | None = Field(
+        default=None,
+        description=(
+            "Post IDs the scraper should skip server-side. Used for "
+            "incremental dedupe: pass the IDs we already have so BrightData "
+            "does not re-fetch them. Empty list is treated the same as None."
+        ),
+    )
+    post_type: str | None = Field(
+        default=None,
+        description=(
+            "Optional post-type filter. Instagram accepts 'Post' or 'Reel'; "
+            "omit for both. Ignored on platforms that do not expose this "
+            "filter server-side."
+        ),
     )
 
     model_config = ConfigDict(
