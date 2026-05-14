@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -1644,3 +1644,355 @@ def test_fetch_config_defaults_new_fields_to_none():
     cfg = FetchConfig()
     assert cfg.posts_to_not_include is None
     assert cfg.post_type is None
+
+
+# ---------------------------------------------------------------------------
+# Bot-challenge / scrape-failed typed errors
+#
+# When a BrightData snapshot returns 0 records but carries an `error_code`
+# field, the empty-result outcome is a SCRAPE FAILURE, not a "no posts found"
+# — the platform actively served a challenge or the snapshot failed at the
+# platform layer. Three classifications:
+#
+#   * anti-bot fingerprint (SecFetch / Cloudflare / "Just a moment") in the
+#     raw error payload → FetchBotChallengeError
+#   * any other non-empty error_code → FetchScrapeFailedError
+#   * no error_code field → FetchEmptyResultError (historical "no content
+#     found" path, preserved for empty profiles / tight date filters /
+#     deleted accounts)
+# ---------------------------------------------------------------------------
+
+
+def test_is_bot_challenge_secfetch_fingerprint():
+    """SecFetch payload matches the bot-challenge fingerprint regardless of case."""
+    from syft_ingest.sources.brightdata import _is_bot_challenge
+
+    assert (
+        _is_bot_challenge(
+            "Crawler error: Unexpected token 'S', \"SecFetch P\"... is not valid JSON"
+        )
+        is True
+    )
+
+
+def test_is_bot_challenge_cloudflare_fingerprint():
+    """Cloudflare challenge page matches."""
+    from syft_ingest.sources.brightdata import _is_bot_challenge
+
+    assert _is_bot_challenge("Cloudflare challenge interstitial") is True
+
+
+def test_is_bot_challenge_just_a_moment_fingerprint():
+    """The 'Just a moment' hold-page string matches case-insensitively."""
+    from syft_ingest.sources.brightdata import _is_bot_challenge
+
+    assert _is_bot_challenge("Just a moment...") is True
+
+
+def test_is_bot_challenge_unknown_payload_returns_false():
+    """Generic crawl errors without a fingerprint do not match."""
+    from syft_ingest.sources.brightdata import _is_bot_challenge
+
+    assert _is_bot_challenge("snapshot timeout after 600s") is False
+
+
+def test_is_bot_challenge_empty_string_returns_false():
+    """Empty payload short-circuits to False without scanning fingerprints."""
+    from syft_ingest.sources.brightdata import _is_bot_challenge
+
+    assert _is_bot_challenge("") is False
+
+
+def test_extract_error_record_finds_dict_in_list():
+    """First list entry with an error_code field is returned."""
+    from syft_ingest.sources.brightdata import _extract_error_record
+
+    record = _extract_error_record(
+        [{"error_code": "crawl_error", "error": "SecFetch challenge"}]
+    )
+    assert record == {"error_code": "crawl_error", "error": "SecFetch challenge"}
+
+
+def test_extract_error_record_finds_bare_dict():
+    """A bare dict response with error_code is returned unwrapped."""
+    from syft_ingest.sources.brightdata import _extract_error_record
+
+    record = _extract_error_record({"error_code": "snapshot_timeout", "error": "..."})
+    assert record == {"error_code": "snapshot_timeout", "error": "..."}
+
+
+def test_extract_error_record_returns_none_for_empty_list():
+    """Empty list (genuinely no posts found) yields None."""
+    from syft_ingest.sources.brightdata import _extract_error_record
+
+    assert _extract_error_record([]) is None
+
+
+def test_extract_error_record_returns_none_for_list_without_error_code():
+    """List of content items without an error_code field yields None."""
+    from syft_ingest.sources.brightdata import _extract_error_record
+
+    raw = [{"post_id": "abc", "description": "ordinary post", "user_posted": "u"}]
+    assert _extract_error_record(raw) is None
+
+
+def test_extract_error_record_returns_none_for_non_dict_entries():
+    """Non-dict list entries are skipped without crashing."""
+    from syft_ingest.sources.brightdata import _extract_error_record
+
+    assert _extract_error_record(["a", 1, None]) is None
+
+
+def test_classify_brightdata_error_secfetch_raises_bot_challenge():
+    """SecFetch payload → FetchBotChallengeError with all fields preserved."""
+    from syft_ingest.core.fetcher import FetchBotChallengeError
+    from syft_ingest.sources.brightdata import _classify_brightdata_error
+
+    raw = [
+        {
+            "error": "Crawler error: SecFetch challenge ...",
+            "error_code": "crawl_error",
+        }
+    ]
+    with pytest.raises(FetchBotChallengeError) as exc_info:
+        _classify_brightdata_error(
+            raw, platform_name="instagram", snapshot_id="snap-bot-001"
+        )
+    err = exc_info.value
+    assert err.error_code == "crawl_error"
+    assert err.snapshot_id == "snap-bot-001"
+    assert err.platform == "instagram"
+    assert "SecFetch" in err.raw_error_message
+
+
+def test_classify_brightdata_error_cloudflare_raises_bot_challenge():
+    """Cloudflare payload also classified as bot challenge."""
+    from syft_ingest.core.fetcher import FetchBotChallengeError
+    from syft_ingest.sources.brightdata import _classify_brightdata_error
+
+    raw = [{"error": "Cloudflare interstitial", "error_code": "crawl_error"}]
+    with pytest.raises(FetchBotChallengeError):
+        _classify_brightdata_error(
+            raw, platform_name="facebook", snapshot_id="snap-cf-001"
+        )
+
+
+def test_classify_brightdata_error_non_bot_raises_scrape_failed():
+    """Non-bot error_code (snapshot timeout) → FetchScrapeFailedError."""
+    from syft_ingest.core.fetcher import FetchScrapeFailedError
+    from syft_ingest.sources.brightdata import _classify_brightdata_error
+
+    raw = [
+        {
+            "error": "snapshot timed out after 600s",
+            "error_code": "snapshot_timeout",
+        }
+    ]
+    with pytest.raises(FetchScrapeFailedError) as exc_info:
+        _classify_brightdata_error(
+            raw, platform_name="instagram", snapshot_id="snap-to-001"
+        )
+    err = exc_info.value
+    assert err.error_code == "snapshot_timeout"
+    assert err.snapshot_id == "snap-to-001"
+    assert err.platform == "instagram"
+    assert "timed out" in err.raw_error_message
+
+
+def test_classify_brightdata_error_no_error_code_returns_silently():
+    """Empty list without error_code does NOT raise — caller falls through
+    to FetchEmptyResultError. Regression guard for the historical 'genuinely
+    empty profile' path.
+    """
+    from syft_ingest.sources.brightdata import _classify_brightdata_error
+
+    # Must not raise.
+    _classify_brightdata_error(
+        [], platform_name="instagram", snapshot_id="snap-empty-001"
+    )
+    _classify_brightdata_error(
+        [{"post_id": "abc"}],  # no error_code key
+        platform_name="instagram",
+        snapshot_id="snap-empty-002",
+    )
+
+
+def test_classify_brightdata_error_empty_error_code_returns_silently():
+    """error_code field present but blank → no typed error fires; caller
+    falls through to FetchEmptyResultError. Guards against upstream rows
+    that set the field defensively to an empty string.
+    """
+    from syft_ingest.sources.brightdata import _classify_brightdata_error
+
+    _classify_brightdata_error(
+        [{"error_code": "", "error": "..."}],
+        platform_name="instagram",
+        snapshot_id="snap-blank-001",
+    )
+
+
+@pytest.mark.asyncio
+async def test_fetch_async_raises_bot_challenge_on_secfetch_response(
+    brightdata_fetcher,
+):
+    """End-to-end: snapshot returns SecFetch payload → fetch_async raises
+    FetchBotChallengeError instead of FetchEmptyResultError. Exercises the
+    full Instagram path including the _classify_brightdata_error call site.
+    """
+    from syft_ingest.core.fetcher import FetchBotChallengeError
+
+    request = FetchRequest(
+        platform=Platform.INSTAGRAM,
+        extractor="brightdata",
+        urls=["https://instagram.com/largepublicaccount"],
+    )
+
+    mock_result = MagicMock()
+    mock_result.snapshot_id = "snap-ig-bot-001"
+    mock_result.data = [
+        {
+            "error": "Crawler error: Unexpected token 'S', \"SecFetch P\"... "
+            "is not valid JSON",
+            "error_code": "crawl_error",
+        }
+    ]
+
+    mock_client = AsyncMock()
+    mock_search_ig = AsyncMock()
+    mock_search_ig.posts = AsyncMock(return_value=mock_result)
+    mock_client.search.instagram = mock_search_ig
+
+    with patch("syft_ingest.sources.brightdata.BrightDataClient") as mock_client_class:
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+
+        with pytest.raises(FetchBotChallengeError) as exc_info:
+            await brightdata_fetcher.fetch_async(request)
+
+    err = exc_info.value
+    assert err.error_code == "crawl_error"
+    assert err.snapshot_id == "snap-ig-bot-001"
+    assert err.platform == "instagram"
+    assert "SecFetch" in err.raw_error_message
+
+
+@pytest.mark.asyncio
+async def test_fetch_async_raises_scrape_failed_on_non_bot_error_code(
+    brightdata_fetcher,
+):
+    """End-to-end: snapshot returns a non-bot error_code → fetch_async
+    raises FetchScrapeFailedError, not FetchEmptyResultError.
+    """
+    from syft_ingest.core.fetcher import FetchScrapeFailedError
+
+    request = FetchRequest(
+        platform=Platform.INSTAGRAM,
+        extractor="brightdata",
+        urls=["https://instagram.com/anyaccount"],
+    )
+
+    mock_result = MagicMock()
+    mock_result.snapshot_id = "snap-ig-fail-001"
+    mock_result.data = [
+        {
+            "error": "snapshot worker exited unexpectedly",
+            "error_code": "internal_error",
+        }
+    ]
+
+    mock_client = AsyncMock()
+    mock_search_ig = AsyncMock()
+    mock_search_ig.posts = AsyncMock(return_value=mock_result)
+    mock_client.search.instagram = mock_search_ig
+
+    with patch("syft_ingest.sources.brightdata.BrightDataClient") as mock_client_class:
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+
+        with pytest.raises(FetchScrapeFailedError) as exc_info:
+            await brightdata_fetcher.fetch_async(request)
+
+    err = exc_info.value
+    assert err.error_code == "internal_error"
+    assert err.snapshot_id == "snap-ig-fail-001"
+    assert err.platform == "instagram"
+    assert "worker exited" in err.raw_error_message
+
+
+@pytest.mark.asyncio
+async def test_fetch_async_empty_result_without_error_code_unchanged(
+    brightdata_fetcher,
+):
+    """Regression guard: an empty snapshot with NO error_code field still
+    raises FetchEmptyResultError (e.g. an empty/private profile). This is
+    the historical behavior the typed-error work must NOT change.
+    """
+    request = FetchRequest(
+        platform=Platform.INSTAGRAM,
+        extractor="brightdata",
+        urls=["https://instagram.com/emptyaccount"],
+    )
+
+    mock_result = MagicMock()
+    mock_result.snapshot_id = "snap-ig-empty-001"
+    mock_result.data = []  # genuinely empty, no error_code anywhere
+
+    mock_client = AsyncMock()
+    mock_search_ig = AsyncMock()
+    mock_search_ig.posts = AsyncMock(return_value=mock_result)
+    mock_client.search.instagram = mock_search_ig
+
+    with patch("syft_ingest.sources.brightdata.BrightDataClient") as mock_client_class:
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+
+        with pytest.raises(FetchEmptyResultError):
+            await brightdata_fetcher.fetch_async(request)
+
+
+def test_fetch_bot_challenge_error_subclass_of_fetch_error():
+    """FetchBotChallengeError subclasses FetchError so existing
+    ``except FetchError`` blocks continue to catch it.
+    """
+    from syft_ingest.core.fetcher import FetchBotChallengeError, FetchError
+
+    err = FetchBotChallengeError(
+        "test",
+        platform="instagram",
+        raw_error_message="SecFetch",
+        error_code="crawl_error",
+        snapshot_id="snap-test",
+    )
+    assert isinstance(err, FetchError)
+    assert err.platform == "instagram"
+    assert err.raw_error_message == "SecFetch"
+    assert err.error_code == "crawl_error"
+    assert err.snapshot_id == "snap-test"
+
+
+def test_fetch_scrape_failed_error_subclass_of_fetch_error():
+    """FetchScrapeFailedError subclasses FetchError with identical shape."""
+    from syft_ingest.core.fetcher import FetchError, FetchScrapeFailedError
+
+    err = FetchScrapeFailedError(
+        "test",
+        platform="facebook",
+        raw_error_message="timeout",
+        error_code="snapshot_timeout",
+        snapshot_id="snap-test",
+    )
+    assert isinstance(err, FetchError)
+    assert err.platform == "facebook"
+    assert err.raw_error_message == "timeout"
+    assert err.error_code == "snapshot_timeout"
+    assert err.snapshot_id == "snap-test"
+
+
+def test_typed_errors_reexported_from_top_level():
+    """The two new typed errors are reachable as ``syft_ingest.<Name>``
+    so downstream consumers don't need to import from core.fetcher.
+    """
+    import syft_ingest as si
+
+    assert hasattr(si, "FetchBotChallengeError")
+    assert hasattr(si, "FetchScrapeFailedError")
+    # And the __all__ entries match the export.
+    assert "FetchBotChallengeError" in si.__all__
+    assert "FetchScrapeFailedError" in si.__all__

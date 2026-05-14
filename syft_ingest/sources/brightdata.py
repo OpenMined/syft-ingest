@@ -23,11 +23,13 @@ from loguru import logger
 
 from syft_ingest.core.fetcher import (
     FetchAuthError,
+    FetchBotChallengeError,
     FetchCancelled,
     FetchEmptyResultError,
     FetchError,
     FetchRequest,
     FetchResult,
+    FetchScrapeFailedError,
     FetchTimeoutError,
 )
 from syft_ingest.core.models import (
@@ -90,6 +92,125 @@ def _default_request_timeout() -> int:
         except ValueError:
             pass
     return DEFAULT_REQUEST_TIMEOUT_SECONDS
+
+
+# Anti-bot fingerprint patterns. A snapshot response whose raw `error`
+# payload matches one of these strongly indicates the platform served a
+# bot-challenge page (Cloudflare interstitial, Akamai SecFetch challenge,
+# Cloudflare "Just a moment" hold page) rather than scrape results. The
+# patterns are case-insensitive substring checks — kept simple on purpose
+# because the raw error payload BrightData forwards is unstructured and a
+# strict regex would false-negative on small wording changes upstream.
+_BOT_CHALLENGE_FINGERPRINTS: tuple[str, ...] = (
+    "secfetch",
+    "cloudflare",
+    "just a moment",
+)
+
+
+def _is_bot_challenge(raw_error_message: str) -> bool:
+    """Return True if the raw error payload looks like an anti-bot challenge.
+
+    Matches against the curated fingerprint list above. Case-insensitive
+    substring match — see the comment block on _BOT_CHALLENGE_FINGERPRINTS
+    for why we don't use a stricter regex.
+    """
+    if not raw_error_message:
+        return False
+    haystack = raw_error_message.lower()
+    return any(fp in haystack for fp in _BOT_CHALLENGE_FINGERPRINTS)
+
+
+def _extract_error_record(raw_data: Any) -> dict[str, Any] | None:
+    """Find a dict with an ``error_code`` field on the BrightData response.
+
+    BrightData returns either a list of dicts or a bare dict. Walk both
+    shapes defensively. Returns the first dict that has an ``error_code``
+    key (even if the value is empty — that gets filtered upstream), or
+    ``None`` if no error-shaped record exists.
+    """
+    if isinstance(raw_data, dict):
+        if "error_code" in raw_data:
+            return raw_data
+        return None
+    if isinstance(raw_data, list):
+        for entry in raw_data:
+            if isinstance(entry, dict) and "error_code" in entry:
+                return entry
+    return None
+
+
+def _classify_brightdata_error(
+    raw_data: Any,
+    *,
+    platform_name: str,
+    snapshot_id: str | None,
+) -> None:
+    """Inspect a BrightData snapshot response and raise the typed error.
+
+    Called when ``_parse_response`` returns zero items. If the response
+    carries an ``error_code`` field, the empty-result outcome is a SCRAPE
+    FAILURE, not a "no posts found" — distinguish the two so admins get
+    actionable copy in the UI instead of "no content found" when the
+    underlying cause is a bot challenge.
+
+    Dispatch:
+
+      * Response carries an ``error_code`` AND the raw ``error`` payload
+        matches an anti-bot fingerprint → raise
+        :class:`FetchBotChallengeError`. Admin response: narrow the
+        request (date range / posts limit).
+      * Response carries an ``error_code`` but the raw payload does NOT
+        match a fingerprint → raise :class:`FetchScrapeFailedError`.
+        Admin response: retry or contact support.
+      * Response has no ``error_code`` → return without raising; the
+        caller raises :class:`FetchEmptyResultError` (the historical
+        "genuinely no content" path — empty profile, tight date filter,
+        deleted account).
+
+    The response shape from BrightData's snapshot API is either:
+
+      * A list of dicts where the first element carries
+        ``{"error": "...", "error_code": "..."}`` (most common for the
+        bot-challenge case observed against large public IG accounts)
+      * A bare dict with the same top-level keys (less common)
+      * A list of regular content items (the happy path — never reaches
+        here because _parse_response would have returned non-empty)
+    """
+    error_record = _extract_error_record(raw_data)
+    if error_record is None:
+        return
+
+    # Coerce to str defensively. BrightData's schema is unstructured prose,
+    # so a future upstream drift to integer codes (e.g. error_code: 0) or
+    # bytes would silently collapse to "" under a bare ``... or ""`` —
+    # str(...) prevents that footgun without changing behavior for the
+    # current (string) contract.
+    error_code = str(error_record.get("error_code") or "").strip()
+    if not error_code:
+        # Field present but empty — defer to the FetchEmptyResultError path.
+        return
+
+    raw_error_message = str(error_record.get("error") or "")
+
+    if _is_bot_challenge(raw_error_message):
+        raise FetchBotChallengeError(
+            f"BrightData snapshot {snapshot_id or '<unknown>'} returned an "
+            f"anti-bot challenge ({error_code})",
+            platform=platform_name,
+            raw_error_message=raw_error_message,
+            error_code=error_code,
+            snapshot_id=snapshot_id,
+        )
+
+    raise FetchScrapeFailedError(
+        f"BrightData snapshot {snapshot_id or '<unknown>'} reported scrape "
+        f"failure ({error_code})",
+        platform=platform_name,
+        raw_error_message=raw_error_message,
+        error_code=error_code,
+        snapshot_id=snapshot_id,
+    )
 
 
 _BRIGHTDATA_CANCEL_URL = (
@@ -508,6 +629,23 @@ class BrightDataFetcher:
                         f"Platform {platform_name} not mapped to scraper",
                         platform=platform_name,
                     )
+
+                # Classify BEFORE _parse_response. Error records
+                # (``{"error": ..., "error_code": ...}``) look enough like
+                # post dicts that the permissive Instagram/Facebook parsers
+                # will turn them into 1-item lists with garbage content if
+                # we run the parser first — that bypasses the empty-check
+                # downstream and silently produces a "successful" fetch of
+                # one nonsense post. Running the classifier on raw_data
+                # before parsing means an error-shaped response raises a
+                # typed error here; a genuinely empty response returns
+                # silently and falls through to _parse_response → the
+                # historical FetchEmptyResultError path.
+                _classify_brightdata_error(
+                    raw_data,
+                    platform_name=platform_name,
+                    snapshot_id=snapshot_id,
+                )
 
                 # Parse response into ContentItem list
                 items = self._parse_response(raw_data, platform_name, request.config)

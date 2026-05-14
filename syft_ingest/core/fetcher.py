@@ -353,6 +353,65 @@ class FetchEmptyResultError(FetchError):
     """
 
 
+class _TypedFetchError(FetchError):
+    """Internal shared base for FetchError subclasses that carry an
+    upstream ``error_code`` + raw payload + snapshot id.
+
+    Private (underscore-prefixed) because callers should not catch
+    this — they catch the concrete :class:`FetchBotChallengeError` or
+    :class:`FetchScrapeFailedError` to react with the right copy. The
+    base exists only to dedupe the four-field constructor; downstream
+    semantics live entirely on the concrete subclasses.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        platform: str | None = None,
+        *,
+        raw_error_message: str = "",
+        error_code: str = "",
+        snapshot_id: str | None = None,
+    ) -> None:
+        super().__init__(message, platform=platform)
+        self.raw_error_message = raw_error_message
+        self.error_code = error_code
+        self.snapshot_id = snapshot_id
+
+
+class FetchBotChallengeError(_TypedFetchError):
+    """Snapshot returned an anti-bot challenge page instead of content.
+
+    Raised when the upstream service responded with a recognizable
+    anti-bot fingerprint (e.g. SecFetch / Cloudflare / "Just a moment")
+    rather than scrape results. Distinct from :class:`FetchEmptyResultError`
+    because the platform actively served a challenge — admins typically
+    respond by narrowing the request (date range, post limit) so the
+    scrape stays under the rate threshold, not by retrying as-is.
+
+    Attributes:
+        raw_error_message: Verbatim error payload from the snapshot
+            (preserved for support tickets / debugging).
+        error_code: Upstream error_code field (e.g. ``"crawl_error"``).
+        snapshot_id: Snapshot id that observed the challenge, when known.
+        platform: Inherited from :class:`FetchError`.
+    """
+
+
+class FetchScrapeFailedError(_TypedFetchError):
+    """Snapshot returned an ``error_code`` that is not an anti-bot challenge.
+
+    Catch-all for snapshot-level scrape failures (network errors, snapshot
+    timeouts, upstream parser bugs) where the response carried an
+    ``error_code`` field but the raw error payload did NOT match a known
+    anti-bot fingerprint. Distinct from :class:`FetchBotChallengeError`
+    because the admin response is "retry or contact support" rather than
+    "narrow the request."
+
+    Attributes match :class:`FetchBotChallengeError`.
+    """
+
+
 class FetchCancelled(FetchError):
     """Caller-requested cancellation observed mid-fetch.
 
