@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -1839,8 +1839,6 @@ async def test_fetch_async_raises_bot_challenge_on_secfetch_response(
     FetchBotChallengeError instead of FetchEmptyResultError. Exercises the
     full Instagram path including the _classify_brightdata_error call site.
     """
-    from unittest.mock import MagicMock
-
     from syft_ingest.core.fetcher import FetchBotChallengeError
 
     request = FetchRequest(
@@ -1884,8 +1882,6 @@ async def test_fetch_async_raises_scrape_failed_on_non_bot_error_code(
     """End-to-end: snapshot returns a non-bot error_code → fetch_async
     raises FetchScrapeFailedError, not FetchEmptyResultError.
     """
-    from unittest.mock import MagicMock
-
     from syft_ingest.core.fetcher import FetchScrapeFailedError
 
     request = FetchRequest(
@@ -1929,8 +1925,6 @@ async def test_fetch_async_empty_result_without_error_code_unchanged(
     raises FetchEmptyResultError (e.g. an empty/private profile). This is
     the historical behavior the typed-error work must NOT change.
     """
-    from unittest.mock import MagicMock
-
     request = FetchRequest(
         platform=Platform.INSTAGRAM,
         extractor="brightdata",

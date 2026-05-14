@@ -353,7 +353,33 @@ class FetchEmptyResultError(FetchError):
     """
 
 
-class FetchBotChallengeError(FetchError):
+class _TypedFetchError(FetchError):
+    """Internal shared base for FetchError subclasses that carry an
+    upstream ``error_code`` + raw payload + snapshot id.
+
+    Private (underscore-prefixed) because callers should not catch
+    this — they catch the concrete :class:`FetchBotChallengeError` or
+    :class:`FetchScrapeFailedError` to react with the right copy. The
+    base exists only to dedupe the four-field constructor; downstream
+    semantics live entirely on the concrete subclasses.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        platform: str | None = None,
+        *,
+        raw_error_message: str = "",
+        error_code: str = "",
+        snapshot_id: str | None = None,
+    ) -> None:
+        super().__init__(message, platform=platform)
+        self.raw_error_message = raw_error_message
+        self.error_code = error_code
+        self.snapshot_id = snapshot_id
+
+
+class FetchBotChallengeError(_TypedFetchError):
     """Snapshot returned an anti-bot challenge page instead of content.
 
     Raised when the upstream service responded with a recognizable
@@ -371,22 +397,8 @@ class FetchBotChallengeError(FetchError):
         platform: Inherited from :class:`FetchError`.
     """
 
-    def __init__(
-        self,
-        message: str,
-        platform: str | None = None,
-        *,
-        raw_error_message: str = "",
-        error_code: str = "",
-        snapshot_id: str | None = None,
-    ) -> None:
-        super().__init__(message, platform=platform)
-        self.raw_error_message = raw_error_message
-        self.error_code = error_code
-        self.snapshot_id = snapshot_id
 
-
-class FetchScrapeFailedError(FetchError):
+class FetchScrapeFailedError(_TypedFetchError):
     """Snapshot returned an ``error_code`` that is not an anti-bot challenge.
 
     Catch-all for snapshot-level scrape failures (network errors, snapshot
@@ -398,20 +410,6 @@ class FetchScrapeFailedError(FetchError):
 
     Attributes match :class:`FetchBotChallengeError`.
     """
-
-    def __init__(
-        self,
-        message: str,
-        platform: str | None = None,
-        *,
-        raw_error_message: str = "",
-        error_code: str = "",
-        snapshot_id: str | None = None,
-    ) -> None:
-        super().__init__(message, platform=platform)
-        self.raw_error_message = raw_error_message
-        self.error_code = error_code
-        self.snapshot_id = snapshot_id
 
 
 class FetchCancelled(FetchError):

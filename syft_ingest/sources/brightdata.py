@@ -121,6 +121,25 @@ def _is_bot_challenge(raw_error_message: str) -> bool:
     return any(fp in haystack for fp in _BOT_CHALLENGE_FINGERPRINTS)
 
 
+def _extract_error_record(raw_data: Any) -> dict[str, Any] | None:
+    """Find a dict with an ``error_code`` field on the BrightData response.
+
+    BrightData returns either a list of dicts or a bare dict. Walk both
+    shapes defensively. Returns the first dict that has an ``error_code``
+    key (even if the value is empty — that gets filtered upstream), or
+    ``None`` if no error-shaped record exists.
+    """
+    if isinstance(raw_data, dict):
+        if "error_code" in raw_data:
+            return raw_data
+        return None
+    if isinstance(raw_data, list):
+        for entry in raw_data:
+            if isinstance(entry, dict) and "error_code" in entry:
+                return entry
+    return None
+
+
 def _classify_brightdata_error(
     raw_data: Any,
     *,
@@ -162,6 +181,11 @@ def _classify_brightdata_error(
     if error_record is None:
         return
 
+    # Coerce to str defensively. BrightData's schema is unstructured prose,
+    # so a future upstream drift to integer codes (e.g. error_code: 0) or
+    # bytes would silently collapse to "" under a bare ``... or ""`` —
+    # str(...) prevents that footgun without changing behavior for the
+    # current (string) contract.
     error_code = str(error_record.get("error_code") or "").strip()
     if not error_code:
         # Field present but empty — defer to the FetchEmptyResultError path.
@@ -187,25 +211,6 @@ def _classify_brightdata_error(
         error_code=error_code,
         snapshot_id=snapshot_id,
     )
-
-
-def _extract_error_record(raw_data: Any) -> dict[str, Any] | None:
-    """Find a dict with an ``error_code`` field on the BrightData response.
-
-    BrightData returns either a list of dicts or a bare dict. Walk both
-    shapes defensively. Returns the first dict that has an ``error_code``
-    key (even if the value is empty — that gets filtered upstream), or
-    ``None`` if no error-shaped record exists.
-    """
-    if isinstance(raw_data, dict):
-        if "error_code" in raw_data:
-            return raw_data
-        return None
-    if isinstance(raw_data, list):
-        for entry in raw_data:
-            if isinstance(entry, dict) and "error_code" in entry:
-                return entry
-    return None
 
 
 _BRIGHTDATA_CANCEL_URL = (
