@@ -21,6 +21,23 @@ from syft_ingest.core.models import (
 from syft_ingest.core.url_router import Platform
 from syft_ingest.sources.brightdata import BrightDataFetcher
 
+
+def _make_ig(mock_client, sid="snap-ig"):
+    """Wire ``mock_client.search.instagram`` for the trigger/poll/download path.
+
+    Returns the ``ig`` MagicMock so callers can inspect
+    ``ig.api_client.trigger.call_args``. Pair every use with a patch of
+    ``_download_snapshot_data`` (the actual download is what carries the raw
+    data now — the trigger only returns a snapshot id).
+    """
+    ig = MagicMock()
+    ig.DATASET_ID_POSTS = "gd_posts"
+    ig.api_client.trigger = AsyncMock(return_value=sid)
+    ig.api_client.get_status = AsyncMock(return_value="ready")
+    mock_client.search.instagram = ig
+    return ig
+
+
 # ---- Fixtures ----
 
 
@@ -48,7 +65,6 @@ def mock_job():
     job = AsyncMock()
     job.snapshot_id = "mock-job-12345"
     job.status = AsyncMock(return_value="ready")
-    job.fetch = AsyncMock(return_value={"profiles": []})
     return job
 
 
@@ -65,11 +81,7 @@ async def testfetch_async_with_instagram_profile_success(brightdata_fetcher):
         config={"timeout": 30},
     )
 
-    from unittest.mock import MagicMock
-
-    mock_result = MagicMock()
-    mock_result.snapshot_id = "snap-ig-001"
-    mock_result.data = [
+    raw = [
         {
             "post_id": "123",
             "description": "Test caption",
@@ -84,25 +96,25 @@ async def testfetch_async_with_instagram_profile_success(brightdata_fetcher):
     ]
 
     mock_client = AsyncMock()
-    mock_search_ig = AsyncMock()
-    mock_search_ig.posts = AsyncMock(return_value=mock_result)
-    mock_client.search.instagram = mock_search_ig
+    ig = _make_ig(mock_client, sid="snap-ig-001")
 
     with patch("syft_ingest.sources.brightdata.BrightDataClient") as mock_client_class:
         mock_client_class.return_value.__aenter__.return_value = mock_client
 
-        result = await brightdata_fetcher.fetch_async(request)
+        with patch(
+            "syft_ingest.sources.brightdata._download_snapshot_data",
+            AsyncMock(return_value=raw),
+        ):
+            result = await brightdata_fetcher.fetch_async(request)
 
         assert result.remote_job_id == "snap-ig-001"
         assert result.remote_status == "ready"
         assert result.rows_fetched == 1
         assert len(result.items) == 1
 
-        # Verify search was called with correct URL and timeout
-        mock_search_ig.posts.assert_called_once_with(
-            url="https://instagram.com/testuser",
-            timeout=30,
-        )
+        # Verify discovery was triggered for the correct URL.
+        payload0 = ig.api_client.trigger.call_args.kwargs["payload"][0]
+        assert payload0["url"] == "https://instagram.com/testuser"
 
 
 @pytest.mark.asyncio
@@ -115,23 +127,22 @@ async def testfetch_async_with_facebook_profile_success(brightdata_fetcher):
         config={"timeout": 45, "poll_interval": 3},
     )
 
+    raw = {
+        "posts": [
+            {
+                "id": "post-001",
+                "message": "Test post",
+                "created_time": "2026-01-01T12:00:00Z",
+                "from": {"name": "Test User"},
+                "like_count": 10,
+                "comment_count": 2,
+            }
+        ]
+    }
+
     mock_job = AsyncMock()
     mock_job.snapshot_id = "job-fb-002"
     mock_job.status = AsyncMock(return_value="ready")
-    mock_job.fetch = AsyncMock(
-        return_value={
-            "posts": [
-                {
-                    "id": "post-001",
-                    "message": "Test post",
-                    "created_time": "2026-01-01T12:00:00Z",
-                    "from": {"name": "Test User"},
-                    "like_count": 10,
-                    "comment_count": 2,
-                }
-            ]
-        }
-    )
 
     mock_client = AsyncMock()
     mock_scraper = AsyncMock()
@@ -141,7 +152,11 @@ async def testfetch_async_with_facebook_profile_success(brightdata_fetcher):
     with patch("syft_ingest.sources.brightdata.BrightDataClient") as mock_client_class:
         mock_client_class.return_value.__aenter__.return_value = mock_client
 
-        result = await brightdata_fetcher.fetch_async(request)
+        with patch(
+            "syft_ingest.sources.brightdata._download_snapshot_data",
+            AsyncMock(return_value=raw),
+        ):
+            result = await brightdata_fetcher.fetch_async(request)
 
         assert result.remote_job_id == "job-fb-002"
         assert result.remote_status == "ready"
@@ -172,11 +187,7 @@ async def testfetch_async_uses_default_timeout_and_poll_interval(brightdata_fetc
         config={},  # Empty config — should use default timeout=180
     )
 
-    from unittest.mock import MagicMock
-
-    mock_result = MagicMock()
-    mock_result.snapshot_id = "snap-default"
-    mock_result.data = [
+    raw = [
         {
             "post_id": "1",
             "description": "Post",
@@ -191,18 +202,25 @@ async def testfetch_async_uses_default_timeout_and_poll_interval(brightdata_fetc
     ]
 
     mock_client = AsyncMock()
-    mock_search_ig = AsyncMock()
-    mock_search_ig.posts = AsyncMock(return_value=mock_result)
-    mock_client.search.instagram = mock_search_ig
+    _make_ig(mock_client, sid="snap-default")
 
     with patch("syft_ingest.sources.brightdata.BrightDataClient") as mock_client_class:
         mock_client_class.return_value.__aenter__.return_value = mock_client
 
-        await brightdata_fetcher.fetch_async(request)
+        # The default timeout (180s) now flows to _poll_until_ready rather than
+        # the SDK's combined posts() call; patch it to capture the awaited kwarg.
+        with patch(
+            "syft_ingest.sources.brightdata._poll_until_ready", AsyncMock()
+        ) as mock_poll:
+            with patch(
+                "syft_ingest.sources.brightdata._download_snapshot_data",
+                AsyncMock(return_value=raw),
+            ):
+                await brightdata_fetcher.fetch_async(request)
 
-        # Verify default timeout was passed to search
-        call_kwargs = mock_search_ig.posts.call_args[1]
-        assert call_kwargs["timeout"] == 180
+        # Verify default timeout was passed to the poll helper.
+        mock_poll.assert_awaited_once()
+        assert mock_poll.await_args.kwargs["timeout"] == 180
 
 
 # ---- Timeout error tests ----
@@ -210,7 +228,7 @@ async def testfetch_async_uses_default_timeout_and_poll_interval(brightdata_fetc
 
 @pytest.mark.asyncio
 async def test_poll_timeout_error_raises_fetch_timeout_error(brightdata_fetcher):
-    """When Instagram search raises TimeoutError, raise FetchTimeoutError."""
+    """When the Instagram download raises TimeoutError, raise FetchTimeoutError."""
     request = FetchRequest(
         platform=Platform.INSTAGRAM,
         extractor="brightdata",
@@ -219,16 +237,19 @@ async def test_poll_timeout_error_raises_fetch_timeout_error(brightdata_fetcher)
     )
 
     mock_client = AsyncMock()
-    mock_search_ig = AsyncMock()
-    # Simulate timeout during search
-    mock_search_ig.posts = AsyncMock(side_effect=TimeoutError("Search timed out"))
-    mock_client.search.instagram = mock_search_ig
+    _make_ig(mock_client)
 
     with patch("syft_ingest.sources.brightdata.BrightDataClient") as mock_client_class:
         mock_client_class.return_value.__aenter__.return_value = mock_client
 
-        with pytest.raises(FetchTimeoutError) as exc_info:
-            await brightdata_fetcher.fetch_async(request)
+        # Simulate timeout during download — the outer fetch_async TimeoutError
+        # handler still maps it to FetchTimeoutError.
+        with patch(
+            "syft_ingest.sources.brightdata._download_snapshot_data",
+            AsyncMock(side_effect=TimeoutError("Download timed out")),
+        ):
+            with pytest.raises(FetchTimeoutError) as exc_info:
+                await brightdata_fetcher.fetch_async(request)
 
         assert "timed out" in str(exc_info.value).lower()
         assert exc_info.value.platform == "instagram"
@@ -327,20 +348,22 @@ async def test_api_error_401_raises_fetch_auth_error(brightdata_fetcher):
         urls=["https://instagram.com/test"],
     )
 
-    # search.instagram.posts raises APIError with 401
+    # The download raises APIError with 401.
     api_error = APIError("Unauthorized")
     api_error.status_code = 401
 
     mock_client = AsyncMock()
-    mock_search_ig = AsyncMock()
-    mock_search_ig.posts = AsyncMock(side_effect=api_error)
-    mock_client.search.instagram = mock_search_ig
+    _make_ig(mock_client)
 
     with patch("syft_ingest.sources.brightdata.BrightDataClient") as mock_client_class:
         mock_client_class.return_value.__aenter__.return_value = mock_client
 
-        with pytest.raises(FetchAuthError) as exc_info:
-            await brightdata_fetcher.fetch_async(request)
+        with patch(
+            "syft_ingest.sources.brightdata._download_snapshot_data",
+            AsyncMock(side_effect=api_error),
+        ):
+            with pytest.raises(FetchAuthError) as exc_info:
+                await brightdata_fetcher.fetch_async(request)
 
         assert "auth" in str(exc_info.value).lower()
 
@@ -359,10 +382,9 @@ async def test_api_error_403_raises_fetch_auth_error(brightdata_fetcher):
     mock_job = AsyncMock()
     mock_job.snapshot_id = "job-403"
     mock_job.status = AsyncMock(return_value="ready")
-    # fetch() raises APIError with 403
+    # The download raises APIError with 403.
     api_error = APIError("Forbidden")
     api_error.status_code = 403
-    mock_job.fetch = AsyncMock(side_effect=api_error)
 
     mock_client = AsyncMock()
     mock_scraper = AsyncMock()
@@ -372,8 +394,12 @@ async def test_api_error_403_raises_fetch_auth_error(brightdata_fetcher):
     with patch("syft_ingest.sources.brightdata.BrightDataClient") as mock_client_class:
         mock_client_class.return_value.__aenter__.return_value = mock_client
 
-        with pytest.raises(FetchAuthError) as exc_info:
-            await brightdata_fetcher.fetch_async(request)
+        with patch(
+            "syft_ingest.sources.brightdata._download_snapshot_data",
+            AsyncMock(side_effect=api_error),
+        ):
+            with pytest.raises(FetchAuthError) as exc_info:
+                await brightdata_fetcher.fetch_async(request)
 
         assert "auth" in str(exc_info.value).lower()
 
@@ -389,24 +415,22 @@ async def test_api_error_500_raises_fetch_error(brightdata_fetcher):
         urls=["https://instagram.com/test"],
     )
 
-    mock_job = AsyncMock()
-    mock_job.snapshot_id = "job-500"
-    mock_job.status = AsyncMock(return_value="ready")
-    # fetch() raises APIError with 500
+    # The download raises APIError with 500.
     api_error = APIError("Internal Server Error")
     api_error.status_code = 500
-    mock_job.fetch = AsyncMock(side_effect=api_error)
 
     mock_client = AsyncMock()
-    mock_scraper = AsyncMock()
-    mock_scraper.profiles_trigger = AsyncMock(return_value=mock_job)
-    mock_client.scrape.instagram = mock_scraper
+    _make_ig(mock_client)
 
     with patch("syft_ingest.sources.brightdata.BrightDataClient") as mock_client_class:
         mock_client_class.return_value.__aenter__.return_value = mock_client
 
-        with pytest.raises(FetchError) as exc_info:
-            await brightdata_fetcher.fetch_async(request)
+        with patch(
+            "syft_ingest.sources.brightdata._download_snapshot_data",
+            AsyncMock(side_effect=api_error),
+        ):
+            with pytest.raises(FetchError) as exc_info:
+                await brightdata_fetcher.fetch_async(request)
 
         # Should be FetchError, not FetchAuthError
         assert not isinstance(exc_info.value, FetchAuthError)
@@ -452,17 +476,13 @@ async def test_tiktok_not_supported_in_phase_2(brightdata_fetcher):
 
 def test_run_fetcher_sync_with_brightdata(brightdata_fetcher):
     """run_fetcher_sync bridges async BrightDataFetcher to sync callers (Instagram search path)."""
-    from unittest.mock import MagicMock
-
     request = FetchRequest(
         platform=Platform.INSTAGRAM,
         extractor="brightdata",
         urls=["https://instagram.com/test"],
     )
 
-    mock_result = MagicMock()
-    mock_result.snapshot_id = "snap-sync-test"
-    mock_result.data = [
+    raw = [
         {
             "post_id": "1",
             "description": "Sync test post",
@@ -477,13 +497,15 @@ def test_run_fetcher_sync_with_brightdata(brightdata_fetcher):
     ]
 
     mock_client = AsyncMock()
-    mock_search_ig = AsyncMock()
-    mock_search_ig.posts = AsyncMock(return_value=mock_result)
-    mock_client.search.instagram = mock_search_ig
+    _make_ig(mock_client, sid="snap-sync-test")
 
     with patch("syft_ingest.sources.brightdata.BrightDataClient") as mock_client_class:
         mock_client_class.return_value.__aenter__.return_value = mock_client
-        result = run_fetcher_sync(brightdata_fetcher, request)
+        with patch(
+            "syft_ingest.sources.brightdata._download_snapshot_data",
+            AsyncMock(return_value=raw),
+        ):
+            result = run_fetcher_sync(brightdata_fetcher, request)
         assert result.remote_job_id == "snap-sync-test"
         assert len(result.items) >= 1
 
@@ -958,21 +980,18 @@ async def test_empty_result_error_in_fetch(brightdata_fetcher):
         urls=["https://instagram.com/test"],
     )
 
-    mock_job = AsyncMock()
-    mock_job.snapshot_id = "job-empty"
-    mock_job.status = AsyncMock(return_value="ready")
-    mock_job.fetch = AsyncMock(return_value={})  # Empty response
-
     mock_client = AsyncMock()
-    mock_scraper = AsyncMock()
-    mock_scraper.profiles_trigger = AsyncMock(return_value=mock_job)
-    mock_client.scrape.instagram = mock_scraper
+    _make_ig(mock_client, sid="job-empty")
 
     with patch("syft_ingest.sources.brightdata.BrightDataClient") as mock_client_class:
         mock_client_class.return_value.__aenter__.return_value = mock_client
 
-        with pytest.raises(FetchEmptyResultError):
-            await brightdata_fetcher.fetch_async(request)
+        with patch(
+            "syft_ingest.sources.brightdata._download_snapshot_data",
+            AsyncMock(return_value={}),  # Empty response
+        ):
+            with pytest.raises(FetchEmptyResultError):
+                await brightdata_fetcher.fetch_async(request)
 
 
 def test_parse_error_handling_skips_bad_items(brightdata_fetcher):
@@ -1062,20 +1081,19 @@ async def test_facebook_trigger_includes_start_date_when_provided(brightdata_fet
         start_date="2026-04-01",
     )
 
+    raw = [
+        {
+            "post_id": "p1",
+            "content": "April post",
+            "date_posted": "2026-04-02T00:00:00Z",
+            "page_name": "Test Page",
+            "url": "https://facebook.com/p/p1",
+        }
+    ]
+
     mock_job = AsyncMock()
     mock_job.snapshot_id = "job-fb-date"
     mock_job.status = AsyncMock(return_value="ready")
-    mock_job.fetch = AsyncMock(
-        return_value=[
-            {
-                "post_id": "p1",
-                "content": "April post",
-                "date_posted": "2026-04-02T00:00:00Z",
-                "page_name": "Test Page",
-                "url": "https://facebook.com/p/p1",
-            }
-        ]
-    )
 
     mock_client = AsyncMock()
     mock_scraper = AsyncMock()
@@ -1084,7 +1102,11 @@ async def test_facebook_trigger_includes_start_date_when_provided(brightdata_fet
 
     with patch("syft_ingest.sources.brightdata.BrightDataClient") as mock_client_class:
         mock_client_class.return_value.__aenter__.return_value = mock_client
-        await brightdata_fetcher.fetch_async(request)
+        with patch(
+            "syft_ingest.sources.brightdata._download_snapshot_data",
+            AsyncMock(return_value=raw),
+        ):
+            await brightdata_fetcher.fetch_async(request)
 
     call_kwargs = mock_scraper.posts_by_profile_trigger.call_args[1]
     assert call_kwargs.get("start_date") == "04-01-2026"  # Converted to MM-DD-YYYY
@@ -1100,20 +1122,19 @@ async def test_facebook_trigger_omits_start_date_when_none(brightdata_fetcher):
         # No start_date
     )
 
+    raw = [
+        {
+            "post_id": "p1",
+            "content": "Post",
+            "date_posted": "2026-01-01T00:00:00Z",
+            "page_name": "Test Page",
+            "url": "https://facebook.com/p/p1",
+        }
+    ]
+
     mock_job = AsyncMock()
     mock_job.snapshot_id = "job-fb-nodate"
     mock_job.status = AsyncMock(return_value="ready")
-    mock_job.fetch = AsyncMock(
-        return_value=[
-            {
-                "post_id": "p1",
-                "content": "Post",
-                "date_posted": "2026-01-01T00:00:00Z",
-                "page_name": "Test Page",
-                "url": "https://facebook.com/p/p1",
-            }
-        ]
-    )
 
     mock_client = AsyncMock()
     mock_scraper = AsyncMock()
@@ -1122,7 +1143,11 @@ async def test_facebook_trigger_omits_start_date_when_none(brightdata_fetcher):
 
     with patch("syft_ingest.sources.brightdata.BrightDataClient") as mock_client_class:
         mock_client_class.return_value.__aenter__.return_value = mock_client
-        await brightdata_fetcher.fetch_async(request)
+        with patch(
+            "syft_ingest.sources.brightdata._download_snapshot_data",
+            AsyncMock(return_value=raw),
+        ):
+            await brightdata_fetcher.fetch_async(request)
 
     call_kwargs = mock_scraper.posts_by_profile_trigger.call_args[1]
     assert "start_date" not in call_kwargs  # Must not pass start_date=None to SDK
@@ -1133,9 +1158,7 @@ async def test_facebook_trigger_omits_start_date_when_none(brightdata_fetcher):
 
 @pytest.mark.asyncio
 async def test_instagram_search_includes_start_date_when_provided(brightdata_fetcher):
-    """When start_date is set on FetchRequest, it is passed to search.instagram.posts."""
-    from unittest.mock import MagicMock
-
+    """When start_date is set on FetchRequest, it is included in the discovery payload."""
     request = FetchRequest(
         platform=Platform.INSTAGRAM,
         extractor="brightdata",
@@ -1143,9 +1166,7 @@ async def test_instagram_search_includes_start_date_when_provided(brightdata_fet
         start_date="2026-04-01",
     )
 
-    mock_result = MagicMock()
-    mock_result.snapshot_id = "snap-ig-date"
-    mock_result.data = [
+    raw = [
         {
             "post_id": "ig1",
             "description": "April post",
@@ -1160,23 +1181,23 @@ async def test_instagram_search_includes_start_date_when_provided(brightdata_fet
     ]
 
     mock_client = AsyncMock()
-    mock_search_ig = AsyncMock()
-    mock_search_ig.posts = AsyncMock(return_value=mock_result)
-    mock_client.search.instagram = mock_search_ig
+    ig = _make_ig(mock_client, sid="snap-ig-date")
 
     with patch("syft_ingest.sources.brightdata.BrightDataClient") as mock_client_class:
         mock_client_class.return_value.__aenter__.return_value = mock_client
-        await brightdata_fetcher.fetch_async(request)
+        with patch(
+            "syft_ingest.sources.brightdata._download_snapshot_data",
+            AsyncMock(return_value=raw),
+        ):
+            await brightdata_fetcher.fetch_async(request)
 
-    call_kwargs = mock_search_ig.posts.call_args[1]
-    assert call_kwargs.get("start_date") == "04-01-2026"  # Converted to MM-DD-YYYY
+    payload0 = ig.api_client.trigger.call_args.kwargs["payload"][0]
+    assert payload0["start_date"] == "04-01-2026"  # Converted to MM-DD-YYYY
 
 
 @pytest.mark.asyncio
 async def test_instagram_search_omits_start_date_when_none(brightdata_fetcher):
-    """When start_date is None, search.instagram.posts is called without start_date kwarg."""
-    from unittest.mock import MagicMock
-
+    """When start_date is None, it is absent from the discovery payload."""
     request = FetchRequest(
         platform=Platform.INSTAGRAM,
         extractor="brightdata",
@@ -1184,9 +1205,7 @@ async def test_instagram_search_omits_start_date_when_none(brightdata_fetcher):
         # No start_date
     )
 
-    mock_result = MagicMock()
-    mock_result.snapshot_id = "snap-ig-nodate"
-    mock_result.data = [
+    raw = [
         {
             "post_id": "ig1",
             "description": "Post",
@@ -1201,16 +1220,18 @@ async def test_instagram_search_omits_start_date_when_none(brightdata_fetcher):
     ]
 
     mock_client = AsyncMock()
-    mock_search_ig = AsyncMock()
-    mock_search_ig.posts = AsyncMock(return_value=mock_result)
-    mock_client.search.instagram = mock_search_ig
+    ig = _make_ig(mock_client, sid="snap-ig-nodate")
 
     with patch("syft_ingest.sources.brightdata.BrightDataClient") as mock_client_class:
         mock_client_class.return_value.__aenter__.return_value = mock_client
-        await brightdata_fetcher.fetch_async(request)
+        with patch(
+            "syft_ingest.sources.brightdata._download_snapshot_data",
+            AsyncMock(return_value=raw),
+        ):
+            await brightdata_fetcher.fetch_async(request)
 
-    call_kwargs = mock_search_ig.posts.call_args[1]
-    assert "start_date" not in call_kwargs  # Must not pass start_date=None to SDK
+    payload0 = ig.api_client.trigger.call_args.kwargs["payload"][0]
+    assert "start_date" not in payload0  # Must not include start_date=None
 
 
 # ---- gather() integration (unit level) ----
@@ -1255,17 +1276,13 @@ def test_gather_passes_start_date_to_fetch_request(monkeypatch):
 @pytest.mark.asyncio
 async def test_end_to_end_instagram_fetch_with_parsing(brightdata_fetcher):
     """End-to-end Instagram fetch with full parsing (search scraper path)."""
-    from unittest.mock import MagicMock
-
     request = FetchRequest(
         platform=Platform.INSTAGRAM,
         extractor="brightdata",
         urls=["https://instagram.com/testuser"],
     )
 
-    mock_result = MagicMock()
-    mock_result.snapshot_id = "snap-ig-e2e"
-    mock_result.data = [
+    raw = [
         {
             "post_id": "post-001",
             "description": "My caption",
@@ -1280,14 +1297,16 @@ async def test_end_to_end_instagram_fetch_with_parsing(brightdata_fetcher):
     ]
 
     mock_client = AsyncMock()
-    mock_search_ig = AsyncMock()
-    mock_search_ig.posts = AsyncMock(return_value=mock_result)
-    mock_client.search.instagram = mock_search_ig
+    _make_ig(mock_client, sid="snap-ig-e2e")
 
     with patch("syft_ingest.sources.brightdata.BrightDataClient") as mock_client_class:
         mock_client_class.return_value.__aenter__.return_value = mock_client
 
-        result = await brightdata_fetcher.fetch_async(request)
+        with patch(
+            "syft_ingest.sources.brightdata._download_snapshot_data",
+            AsyncMock(return_value=raw),
+        ):
+            result = await brightdata_fetcher.fetch_async(request)
 
         assert result.remote_job_id == "snap-ig-e2e"
         assert result.remote_status == "ready"
@@ -1355,23 +1374,19 @@ async def test_fetch_async_passes_request_timeout_to_brightdata_client(valid_tok
         urls=["https://instagram.com/testuser"],
     )
 
-    from unittest.mock import MagicMock
-
-    mock_result = MagicMock()
-    mock_result.snapshot_id = "snap-ig-timeout"
-    mock_result.data = []
-
     mock_client = AsyncMock()
-    mock_search_ig = AsyncMock()
-    mock_search_ig.posts = AsyncMock(return_value=mock_result)
-    mock_client.search.instagram = mock_search_ig
+    _make_ig(mock_client, sid="snap-ig-timeout")
 
     with patch("syft_ingest.sources.brightdata.BrightDataClient") as mock_client_class:
         mock_client_class.return_value.__aenter__.return_value = mock_client
-        # Empty results raise FetchEmptyResultError — fine, we only care about
-        # how BrightDataClient was constructed.
-        with pytest.raises(FetchEmptyResultError):
-            await fetcher.fetch_async(request)
+        with patch(
+            "syft_ingest.sources.brightdata._download_snapshot_data",
+            AsyncMock(return_value=[]),
+        ):
+            # Empty results raise FetchEmptyResultError — fine, we only care
+            # about how BrightDataClient was constructed.
+            with pytest.raises(FetchEmptyResultError):
+                await fetcher.fetch_async(request)
 
     mock_client_class.assert_called_once()
     call_kwargs = mock_client_class.call_args.kwargs
@@ -1382,49 +1397,60 @@ async def test_fetch_async_passes_request_timeout_to_brightdata_client(valid_tok
 # ---- posts_to_not_include passthrough tests ----
 
 
-def _ig_search_mocks(snapshot_id: str = "snap-ig"):
-    """Build the IG search-scraper mock pair (result + scraper)."""
-    from unittest.mock import MagicMock
+# Shared raw payloads the passthrough tests download through the patched seam.
+_IG_PASSTHROUGH_RAW = [
+    {
+        "post_id": "ig1",
+        "description": "Post",
+        "user_posted": "testuser",
+        "likes": 1,
+        "num_comments": 0,
+        "date_posted": "2026-04-02T00:00:00Z",
+        "content_type": "Image",
+        "photos": [],
+        "url": "https://instagram.com/p/ig1",
+    }
+]
+_FB_PASSTHROUGH_RAW = [
+    {
+        "post_id": "p1",
+        "content": "Post",
+        "date_posted": "2026-04-02T00:00:00Z",
+        "page_name": "Test Page",
+        "url": "https://facebook.com/p/p1",
+    }
+]
 
-    mock_result = MagicMock()
-    mock_result.snapshot_id = snapshot_id
-    mock_result.data = [
-        {
-            "post_id": "ig1",
-            "description": "Post",
-            "user_posted": "testuser",
-            "likes": 1,
-            "num_comments": 0,
-            "date_posted": "2026-04-02T00:00:00Z",
-            "content_type": "Image",
-            "photos": [],
-            "url": "https://instagram.com/p/ig1",
-        }
-    ]
-    mock_search_ig = AsyncMock()
-    mock_search_ig.posts = AsyncMock(return_value=mock_result)
-    return mock_result, mock_search_ig
+
+def _ig_search_mocks(snapshot_id: str = "snap-ig"):
+    """Build the IG trigger/poll mock and wire it onto a fresh client.
+
+    Returns ``(mock_client, ig)``. Pair every use with a patch of
+    ``_download_snapshot_data`` (return ``_IG_PASSTHROUGH_RAW``); inspect
+    ``ig.api_client.trigger.call_args.kwargs["payload"][0]`` for the discovery
+    payload the passthrough assertions target.
+    """
+    mock_client = AsyncMock()
+    ig = _make_ig(mock_client, sid=snapshot_id)
+    return mock_client, ig
 
 
 def _fb_trigger_mocks(snapshot_id: str = "job-fb"):
-    """Build the FB trigger/poll mock pair (job + scraper)."""
+    """Build the FB trigger/poll mock and wire it onto a fresh client.
+
+    Returns ``(mock_client, mock_scraper)``. Pair every use with a patch of
+    ``_download_snapshot_data`` (return ``_FB_PASSTHROUGH_RAW``); inspect
+    ``mock_scraper.posts_by_profile_trigger.call_args[1]`` for the trigger
+    kwargs the passthrough assertions target.
+    """
     mock_job = AsyncMock()
     mock_job.snapshot_id = snapshot_id
     mock_job.status = AsyncMock(return_value="ready")
-    mock_job.fetch = AsyncMock(
-        return_value=[
-            {
-                "post_id": "p1",
-                "content": "Post",
-                "date_posted": "2026-04-02T00:00:00Z",
-                "page_name": "Test Page",
-                "url": "https://facebook.com/p/p1",
-            }
-        ]
-    )
     mock_scraper = AsyncMock()
     mock_scraper.posts_by_profile_trigger = AsyncMock(return_value=mock_job)
-    return mock_job, mock_scraper
+    mock_client = AsyncMock()
+    mock_client.scrape.facebook = mock_scraper
+    return mock_client, mock_scraper
 
 
 @pytest.mark.asyncio
@@ -1439,46 +1465,50 @@ async def test_instagram_search_includes_posts_to_not_include_when_provided(
         config={"posts_to_not_include": ["abc123", "def456"]},
     )
 
-    _, mock_search_ig = _ig_search_mocks()
-    mock_client = AsyncMock()
-    mock_client.search.instagram = mock_search_ig
+    mock_client, ig = _ig_search_mocks()
 
     with patch("syft_ingest.sources.brightdata.BrightDataClient") as mock_client_class:
         mock_client_class.return_value.__aenter__.return_value = mock_client
-        await brightdata_fetcher.fetch_async(request)
+        with patch(
+            "syft_ingest.sources.brightdata._download_snapshot_data",
+            AsyncMock(return_value=_IG_PASSTHROUGH_RAW),
+        ):
+            await brightdata_fetcher.fetch_async(request)
 
-    call_kwargs = mock_search_ig.posts.call_args[1]
-    assert call_kwargs.get("posts_to_not_include") == ["abc123", "def456"]
+    payload0 = ig.api_client.trigger.call_args.kwargs["payload"][0]
+    assert payload0.get("posts_to_not_include") == ["abc123", "def456"]
 
 
 @pytest.mark.asyncio
 async def test_instagram_search_omits_posts_to_not_include_when_none(
     brightdata_fetcher,
 ):
-    """When posts_to_not_include is None, it is NOT passed to the SDK."""
+    """When posts_to_not_include is None, it is NOT included in the payload."""
     request = FetchRequest(
         platform=Platform.INSTAGRAM,
         extractor="brightdata",
         urls=["https://instagram.com/testuser"],
     )
 
-    _, mock_search_ig = _ig_search_mocks()
-    mock_client = AsyncMock()
-    mock_client.search.instagram = mock_search_ig
+    mock_client, ig = _ig_search_mocks()
 
     with patch("syft_ingest.sources.brightdata.BrightDataClient") as mock_client_class:
         mock_client_class.return_value.__aenter__.return_value = mock_client
-        await brightdata_fetcher.fetch_async(request)
+        with patch(
+            "syft_ingest.sources.brightdata._download_snapshot_data",
+            AsyncMock(return_value=_IG_PASSTHROUGH_RAW),
+        ):
+            await brightdata_fetcher.fetch_async(request)
 
-    call_kwargs = mock_search_ig.posts.call_args[1]
-    assert "posts_to_not_include" not in call_kwargs
+    payload0 = ig.api_client.trigger.call_args.kwargs["payload"][0]
+    assert "posts_to_not_include" not in payload0
 
 
 @pytest.mark.asyncio
 async def test_instagram_search_omits_posts_to_not_include_when_empty_list(
     brightdata_fetcher,
 ):
-    """Empty list is treated the same as None — kwarg must not reach the SDK."""
+    """Empty list is treated the same as None — key must not reach the payload."""
     request = FetchRequest(
         platform=Platform.INSTAGRAM,
         extractor="brightdata",
@@ -1486,16 +1516,18 @@ async def test_instagram_search_omits_posts_to_not_include_when_empty_list(
         config={"posts_to_not_include": []},
     )
 
-    _, mock_search_ig = _ig_search_mocks()
-    mock_client = AsyncMock()
-    mock_client.search.instagram = mock_search_ig
+    mock_client, ig = _ig_search_mocks()
 
     with patch("syft_ingest.sources.brightdata.BrightDataClient") as mock_client_class:
         mock_client_class.return_value.__aenter__.return_value = mock_client
-        await brightdata_fetcher.fetch_async(request)
+        with patch(
+            "syft_ingest.sources.brightdata._download_snapshot_data",
+            AsyncMock(return_value=_IG_PASSTHROUGH_RAW),
+        ):
+            await brightdata_fetcher.fetch_async(request)
 
-    call_kwargs = mock_search_ig.posts.call_args[1]
-    assert "posts_to_not_include" not in call_kwargs
+    payload0 = ig.api_client.trigger.call_args.kwargs["payload"][0]
+    assert "posts_to_not_include" not in payload0
 
 
 @pytest.mark.asyncio
@@ -1510,13 +1542,15 @@ async def test_facebook_trigger_includes_posts_to_not_include_when_provided(
         config={"posts_to_not_include": ["fb1", "fb2"]},
     )
 
-    _, mock_scraper = _fb_trigger_mocks()
-    mock_client = AsyncMock()
-    mock_client.scrape.facebook = mock_scraper
+    mock_client, mock_scraper = _fb_trigger_mocks()
 
     with patch("syft_ingest.sources.brightdata.BrightDataClient") as mock_client_class:
         mock_client_class.return_value.__aenter__.return_value = mock_client
-        await brightdata_fetcher.fetch_async(request)
+        with patch(
+            "syft_ingest.sources.brightdata._download_snapshot_data",
+            AsyncMock(return_value=_FB_PASSTHROUGH_RAW),
+        ):
+            await brightdata_fetcher.fetch_async(request)
 
     call_kwargs = mock_scraper.posts_by_profile_trigger.call_args[1]
     assert call_kwargs.get("posts_to_not_include") == ["fb1", "fb2"]
@@ -1533,13 +1567,15 @@ async def test_facebook_trigger_omits_posts_to_not_include_when_none(
         urls=["https://facebook.com/testuser"],
     )
 
-    _, mock_scraper = _fb_trigger_mocks()
-    mock_client = AsyncMock()
-    mock_client.scrape.facebook = mock_scraper
+    mock_client, mock_scraper = _fb_trigger_mocks()
 
     with patch("syft_ingest.sources.brightdata.BrightDataClient") as mock_client_class:
         mock_client_class.return_value.__aenter__.return_value = mock_client
-        await brightdata_fetcher.fetch_async(request)
+        with patch(
+            "syft_ingest.sources.brightdata._download_snapshot_data",
+            AsyncMock(return_value=_FB_PASSTHROUGH_RAW),
+        ):
+            await brightdata_fetcher.fetch_async(request)
 
     call_kwargs = mock_scraper.posts_by_profile_trigger.call_args[1]
     assert "posts_to_not_include" not in call_kwargs
@@ -1550,7 +1586,7 @@ async def test_facebook_trigger_omits_posts_to_not_include_when_none(
 
 @pytest.mark.asyncio
 async def test_instagram_search_includes_post_type_when_provided(brightdata_fetcher):
-    """When config.post_type is set, it is passed to search.instagram.posts."""
+    """When config.post_type is set, it is included in the discovery payload."""
     request = FetchRequest(
         platform=Platform.INSTAGRAM,
         extractor="brightdata",
@@ -1558,37 +1594,41 @@ async def test_instagram_search_includes_post_type_when_provided(brightdata_fetc
         config={"post_type": "Reel"},
     )
 
-    _, mock_search_ig = _ig_search_mocks()
-    mock_client = AsyncMock()
-    mock_client.search.instagram = mock_search_ig
+    mock_client, ig = _ig_search_mocks()
 
     with patch("syft_ingest.sources.brightdata.BrightDataClient") as mock_client_class:
         mock_client_class.return_value.__aenter__.return_value = mock_client
-        await brightdata_fetcher.fetch_async(request)
+        with patch(
+            "syft_ingest.sources.brightdata._download_snapshot_data",
+            AsyncMock(return_value=_IG_PASSTHROUGH_RAW),
+        ):
+            await brightdata_fetcher.fetch_async(request)
 
-    call_kwargs = mock_search_ig.posts.call_args[1]
-    assert call_kwargs.get("post_type") == "Reel"
+    payload0 = ig.api_client.trigger.call_args.kwargs["payload"][0]
+    assert payload0.get("post_type") == "Reel"
 
 
 @pytest.mark.asyncio
 async def test_instagram_search_omits_post_type_when_none(brightdata_fetcher):
-    """When post_type is None, it is NOT passed to the SDK (omit-when-omitted)."""
+    """When post_type is None, it is NOT included in the payload (omit-when-omitted)."""
     request = FetchRequest(
         platform=Platform.INSTAGRAM,
         extractor="brightdata",
         urls=["https://instagram.com/testuser"],
     )
 
-    _, mock_search_ig = _ig_search_mocks()
-    mock_client = AsyncMock()
-    mock_client.search.instagram = mock_search_ig
+    mock_client, ig = _ig_search_mocks()
 
     with patch("syft_ingest.sources.brightdata.BrightDataClient") as mock_client_class:
         mock_client_class.return_value.__aenter__.return_value = mock_client
-        await brightdata_fetcher.fetch_async(request)
+        with patch(
+            "syft_ingest.sources.brightdata._download_snapshot_data",
+            AsyncMock(return_value=_IG_PASSTHROUGH_RAW),
+        ):
+            await brightdata_fetcher.fetch_async(request)
 
-    call_kwargs = mock_search_ig.posts.call_args[1]
-    assert "post_type" not in call_kwargs
+    payload0 = ig.api_client.trigger.call_args.kwargs["payload"][0]
+    assert "post_type" not in payload0
 
 
 @pytest.mark.asyncio
@@ -1606,13 +1646,15 @@ async def test_facebook_trigger_never_forwards_post_type(brightdata_fetcher):
         config={"post_type": "Reel"},
     )
 
-    _, mock_scraper = _fb_trigger_mocks()
-    mock_client = AsyncMock()
-    mock_client.scrape.facebook = mock_scraper
+    mock_client, mock_scraper = _fb_trigger_mocks()
 
     with patch("syft_ingest.sources.brightdata.BrightDataClient") as mock_client_class:
         mock_client_class.return_value.__aenter__.return_value = mock_client
-        await brightdata_fetcher.fetch_async(request)
+        with patch(
+            "syft_ingest.sources.brightdata._download_snapshot_data",
+            AsyncMock(return_value=_FB_PASSTHROUGH_RAW),
+        ):
+            await brightdata_fetcher.fetch_async(request)
 
     call_kwargs = mock_scraper.posts_by_profile_trigger.call_args[1]
     assert "post_type" not in call_kwargs
@@ -1847,9 +1889,7 @@ async def test_fetch_async_raises_bot_challenge_on_secfetch_response(
         urls=["https://instagram.com/largepublicaccount"],
     )
 
-    mock_result = MagicMock()
-    mock_result.snapshot_id = "snap-ig-bot-001"
-    mock_result.data = [
+    raw = [
         {
             "error": "Crawler error: Unexpected token 'S', \"SecFetch P\"... "
             "is not valid JSON",
@@ -1858,15 +1898,17 @@ async def test_fetch_async_raises_bot_challenge_on_secfetch_response(
     ]
 
     mock_client = AsyncMock()
-    mock_search_ig = AsyncMock()
-    mock_search_ig.posts = AsyncMock(return_value=mock_result)
-    mock_client.search.instagram = mock_search_ig
+    _make_ig(mock_client, sid="snap-ig-bot-001")
 
     with patch("syft_ingest.sources.brightdata.BrightDataClient") as mock_client_class:
         mock_client_class.return_value.__aenter__.return_value = mock_client
 
-        with pytest.raises(FetchBotChallengeError) as exc_info:
-            await brightdata_fetcher.fetch_async(request)
+        with patch(
+            "syft_ingest.sources.brightdata._download_snapshot_data",
+            AsyncMock(return_value=raw),
+        ):
+            with pytest.raises(FetchBotChallengeError) as exc_info:
+                await brightdata_fetcher.fetch_async(request)
 
     err = exc_info.value
     assert err.error_code == "crawl_error"
@@ -1890,9 +1932,7 @@ async def test_fetch_async_raises_scrape_failed_on_non_bot_error_code(
         urls=["https://instagram.com/anyaccount"],
     )
 
-    mock_result = MagicMock()
-    mock_result.snapshot_id = "snap-ig-fail-001"
-    mock_result.data = [
+    raw = [
         {
             "error": "snapshot worker exited unexpectedly",
             "error_code": "internal_error",
@@ -1900,15 +1940,17 @@ async def test_fetch_async_raises_scrape_failed_on_non_bot_error_code(
     ]
 
     mock_client = AsyncMock()
-    mock_search_ig = AsyncMock()
-    mock_search_ig.posts = AsyncMock(return_value=mock_result)
-    mock_client.search.instagram = mock_search_ig
+    _make_ig(mock_client, sid="snap-ig-fail-001")
 
     with patch("syft_ingest.sources.brightdata.BrightDataClient") as mock_client_class:
         mock_client_class.return_value.__aenter__.return_value = mock_client
 
-        with pytest.raises(FetchScrapeFailedError) as exc_info:
-            await brightdata_fetcher.fetch_async(request)
+        with patch(
+            "syft_ingest.sources.brightdata._download_snapshot_data",
+            AsyncMock(return_value=raw),
+        ):
+            with pytest.raises(FetchScrapeFailedError) as exc_info:
+                await brightdata_fetcher.fetch_async(request)
 
     err = exc_info.value
     assert err.error_code == "internal_error"
@@ -1931,20 +1973,18 @@ async def test_fetch_async_empty_result_without_error_code_unchanged(
         urls=["https://instagram.com/emptyaccount"],
     )
 
-    mock_result = MagicMock()
-    mock_result.snapshot_id = "snap-ig-empty-001"
-    mock_result.data = []  # genuinely empty, no error_code anywhere
-
     mock_client = AsyncMock()
-    mock_search_ig = AsyncMock()
-    mock_search_ig.posts = AsyncMock(return_value=mock_result)
-    mock_client.search.instagram = mock_search_ig
+    _make_ig(mock_client, sid="snap-ig-empty-001")
 
     with patch("syft_ingest.sources.brightdata.BrightDataClient") as mock_client_class:
         mock_client_class.return_value.__aenter__.return_value = mock_client
 
-        with pytest.raises(FetchEmptyResultError):
-            await brightdata_fetcher.fetch_async(request)
+        with patch(
+            "syft_ingest.sources.brightdata._download_snapshot_data",
+            AsyncMock(return_value=[]),  # genuinely empty, no error_code anywhere
+        ):
+            with pytest.raises(FetchEmptyResultError):
+                await brightdata_fetcher.fetch_async(request)
 
 
 def test_fetch_bot_challenge_error_subclass_of_fetch_error():
