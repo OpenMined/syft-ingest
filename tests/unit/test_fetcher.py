@@ -15,6 +15,7 @@ from syft_ingest.core.fetcher import (
     FetchRequest,
     FetchResult,
     FetchTimeoutError,
+    SnapshotNotFoundError,
     run_fetcher_async,
     run_fetcher_sync,
 )
@@ -74,7 +75,29 @@ def test_error_hierarchy():
     assert issubclass(FetchAuthError, FetchError)
     assert issubclass(FetchTimeoutError, FetchError)
     assert issubclass(FetchEmptyResultError, FetchError)
+    assert issubclass(SnapshotNotFoundError, FetchError)
     assert issubclass(FetchError, Exception)
+
+
+def test_snapshot_not_found_error_distinct_from_empty_result():
+    """SnapshotNotFoundError must NOT be a subclass of FetchEmptyResultError.
+
+    Defends: an expired/missing snapshot is a *typed, catchable* signal that the
+    caller should fall back to a fresh trigger — semantically distinct from
+    'the scrape ran but found no posts'. Collapsing the two would make a caller
+    treat retention expiry as an empty profile and never re-trigger.
+    """
+    assert not issubclass(SnapshotNotFoundError, FetchEmptyResultError)
+
+
+def test_snapshot_not_found_error_carries_snapshot_id():
+    """SnapshotNotFoundError forwards message + platform and stores snapshot_id."""
+    err = SnapshotNotFoundError(
+        "snapshot gone", platform="instagram", snapshot_id="sd_expired"
+    )
+    assert err.message == "snapshot gone"
+    assert err.platform == "instagram"
+    assert err.snapshot_id == "sd_expired"
 
 
 def test_error_attributes():

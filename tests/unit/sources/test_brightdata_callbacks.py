@@ -530,3 +530,201 @@ async def test_transient_status_errors_exhausted_raise_FetchError():
             platform_name="facebook",
         )
     assert "sd_dead" in str(excinfo.value)
+
+
+# ---------------------------------------------------------------------------
+# Step 3 — the INITIAL download (via fetch_async) is cancellable too, not just
+# resumes. Both platforms route the download phase through the shared
+# _download_snapshot_data seam carrying the request's cancel/status callbacks.
+# ---------------------------------------------------------------------------
+
+
+def _mock_sdk_client(mock_client):
+    """Patch the BrightData SDK client so `async with BrightDataClient(...)`
+    yields ``mock_client``."""
+    cls = MagicMock()
+    cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+    cls.return_value.__aexit__ = AsyncMock(return_value=None)
+    return patch("syft_ingest.sources.brightdata.BrightDataClient", cls)
+
+
+@pytest.mark.asyncio
+async def test_fetch_async_facebook_routes_download_through_cancellable_helper(
+    monkeypatch,
+):
+    """fetch_async (Facebook) must download via _download_snapshot_data, passing
+    the request's cancel_callback + status_callback — that wiring is what makes
+    the initial FB download cancellable mid-stream (step 3)."""
+    monkeypatch.setenv("BRIGHTDATA_API_TOKEN", "tkn")
+    from syft_ingest.sources.brightdata import BrightDataFetcher
+
+    fetcher = BrightDataFetcher(token="tkn")
+
+    def _cancel() -> bool:
+        return False
+
+    def _status(sid: str, st: str) -> None:
+        return None
+
+    req = FetchRequest(
+        platform="facebook",
+        urls=["https://facebook.com/x"],
+        cancel_callback=_cancel,
+        status_callback=_status,
+    )
+
+    job = AsyncMock()
+    job.snapshot_id = "sd_fb"
+    job.status = AsyncMock(return_value="ready")
+
+    mock_client = MagicMock()
+    mock_client.scrape.facebook.posts_by_profile_trigger = AsyncMock(return_value=job)
+
+    raw = [
+        {
+            "post_id": "1",
+            "url": "https://facebook.com/x/posts/1",
+            "content": "hello",
+            "page_name": "Page",
+            "date_posted": "2025-01-01T00:00:00Z",
+        }
+    ]
+    with _mock_sdk_client(mock_client):
+        with patch(
+            "syft_ingest.sources.brightdata._download_snapshot_data",
+            AsyncMock(return_value=raw),
+        ) as mock_dl:
+            result = await fetcher.fetch_async(req)
+
+    mock_dl.assert_awaited_once()
+    assert mock_dl.await_args.args[0] == "sd_fb"
+    kwargs = mock_dl.await_args.kwargs
+    assert kwargs["cancel_callback"] is _cancel
+    assert kwargs["status_callback"] is _status
+    assert kwargs["platform_name"] == "facebook"
+    assert result.remote_job_id == "sd_fb"
+    assert len(result.items) == 1
+
+
+@pytest.mark.asyncio
+async def test_fetch_async_instagram_routes_download_through_cancellable_helper(
+    monkeypatch,
+):
+    """fetch_async (Instagram) must trigger discovery for a snapshot_id, then
+    download via the same _download_snapshot_data seam carrying cancel/status —
+    so the IG initial download is cancellable mid-stream just like FB. Defends
+    the IG refactor away from the SDK's opaque combined search call."""
+    monkeypatch.setenv("BRIGHTDATA_API_TOKEN", "tkn")
+    from syft_ingest.sources.brightdata import BrightDataFetcher
+
+    fetcher = BrightDataFetcher(token="tkn")
+
+    def _cancel() -> bool:
+        return False
+
+    req = FetchRequest(
+        platform="instagram",
+        urls=["https://instagram.com/nasa/"],
+        cancel_callback=_cancel,
+    )
+
+    ig = MagicMock()
+    ig.DATASET_ID_POSTS = "gd_posts"
+    ig.api_client.trigger = AsyncMock(return_value="sd_ig")
+    ig.api_client.get_status = AsyncMock(return_value="ready")
+
+    mock_client = MagicMock()
+    mock_client.search.instagram = ig
+
+    raw = [
+        {
+            "post_id": "1",
+            "url": "https://instagram.com/p/1",
+            "description": "hi",
+            "user_posted": "nasa",
+            "date_posted": "2025-01-01T00:00:00Z",
+        }
+    ]
+    with _mock_sdk_client(mock_client):
+        with patch(
+            "syft_ingest.sources.brightdata._download_snapshot_data",
+            AsyncMock(return_value=raw),
+        ) as mock_dl:
+            result = await fetcher.fetch_async(req)
+
+    # Triggered discovery (not the opaque combined call) and got a snapshot_id.
+    ig.api_client.trigger.assert_awaited_once()
+    trig_kwargs = ig.api_client.trigger.await_args.kwargs
+    assert trig_kwargs["dataset_id"] == "gd_posts"
+    assert trig_kwargs["extra_params"] == {
+        "type": "discover_new",
+        "discover_by": "url",
+    }
+    assert trig_kwargs["payload"] == [{"url": "https://instagram.com/nasa/"}]
+    # Downloaded that snapshot through the cancellable seam.
+    mock_dl.assert_awaited_once()
+    assert mock_dl.await_args.args[0] == "sd_ig"
+    assert mock_dl.await_args.kwargs["cancel_callback"] is _cancel
+    assert mock_dl.await_args.kwargs["platform_name"] == "instagram"
+    assert result.remote_job_id == "sd_ig"
+    assert len(result.items) == 1
+
+
+@pytest.mark.asyncio
+async def test_initial_download_cancellable_aborts_within_one_chunk(monkeypatch):
+    """End-to-end: a cancel set during the DOWNLOAD phase of a normal Facebook
+    fetch_async aborts within one chunk (the poll already completed 'ready', so
+    this is the download phase, not the poll phase)."""
+    monkeypatch.setenv("BRIGHTDATA_API_TOKEN", "tkn")
+    from syft_ingest.sources.brightdata import BrightDataFetcher
+
+    fetcher = BrightDataFetcher(token="tkn")
+
+    calls = {"n": 0}
+
+    def _cancel() -> bool:
+        # False on the pre-download check, True once chunks start streaming.
+        calls["n"] += 1
+        return calls["n"] >= 2
+
+    req = FetchRequest(
+        platform="facebook",
+        urls=["https://facebook.com/x"],
+        cancel_callback=_cancel,
+    )
+
+    job = AsyncMock()
+    job.snapshot_id = "sd_fb_cancel"
+    job.status = AsyncMock(return_value="ready")
+    mock_client = MagicMock()
+    mock_client.scrape.facebook.posts_by_profile_trigger = AsyncMock(return_value=job)
+
+    # Stream of two chunks so the between-chunks cancel can fire.
+    resp = MagicMock()
+    resp.status_code = 200
+
+    async def _aiter_bytes(chunk_size=None):
+        yield b'[{"post_id":"1"}'
+        yield b"]"
+
+    resp.aiter_bytes = _aiter_bytes
+    resp.aread = AsyncMock(return_value=b"")
+
+    stream_client = MagicMock()
+    stream_cm = MagicMock()
+    stream_cm.__aenter__ = AsyncMock(return_value=resp)
+    stream_cm.__aexit__ = AsyncMock(return_value=None)
+    stream_client.stream = MagicMock(return_value=stream_cm)
+    httpx_cls = MagicMock()
+    httpx_cls.return_value.__aenter__ = AsyncMock(return_value=stream_client)
+    httpx_cls.return_value.__aexit__ = AsyncMock(return_value=None)
+
+    with _mock_sdk_client(mock_client):
+        with patch(
+            "syft_ingest.sources.brightdata._cancel_snapshot", AsyncMock()
+        ) as mock_cancel:
+            with patch("syft_ingest.sources.brightdata.httpx.AsyncClient", httpx_cls):
+                with pytest.raises(FetchCancelled):
+                    await fetcher.fetch_async(req)
+
+    mock_cancel.assert_awaited_once_with("sd_fb_cancel")
