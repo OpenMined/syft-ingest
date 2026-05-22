@@ -112,7 +112,8 @@ async def test_cancel_between_chunks_raises_and_cancels_upstream(token_env):
                     "sd_cancel", platform_name="facebook", cancel_callback=_cancel
                 )
     assert "sd_cancel" in str(exc.value)
-    mock_cancel.assert_awaited_once_with("sd_cancel")
+    # Cancel uses the same resolved credentials the download used (env here).
+    mock_cancel.assert_awaited_once_with("sd_cancel", token="test-token")
 
 
 @pytest.mark.asyncio

@@ -50,11 +50,12 @@ async def download_snapshot(
 
     No re-trigger, no re-collection, no re-bill: streams the snapshot's data by
     id and normalizes it into the same ``Corpus`` a fresh fetch would produce.
-    Waits past a still-collecting (HTTP 202) snapshot until ready, so a resume
-    works even when the snapshot we re-attach to has not finished. Checks
-    ``cancel_callback`` between chunks (raising ``FetchCancelled`` and
-    best-effort cancelling upstream) and emits ``status_callback`` as it
-    progresses.
+    Waits past a still-collecting (HTTP 202) snapshot until ready — up to the
+    download helper's default ready timeout (180s), raising ``FetchTimeoutError``
+    if the snapshot has not finished by then — so a resume works even when the
+    snapshot we re-attach to has not finished. Checks ``cancel_callback`` between
+    chunks (raising ``FetchCancelled`` and best-effort cancelling upstream) and
+    emits ``status_callback`` as it progresses.
 
     Args:
         platform: ``"facebook"`` or ``"instagram"`` (the platforms whose
@@ -72,6 +73,7 @@ async def download_snapshot(
         FetchCancelled: ``cancel_callback`` returned True mid-download.
         SnapshotNotFoundError: Snapshot expired / not found (caller should fall
             back to a fresh trigger).
+        FetchTimeoutError: Snapshot still collecting after the wait timeout.
         FetchEmptyResultError: Snapshot downloaded but contained no items.
         FetchBotChallengeError / FetchScrapeFailedError: Snapshot carried an
             upstream error_code (bot challenge / scrape failure).

@@ -122,6 +122,34 @@ async def test_cancel_snapshot_posts_to_correct_url_with_bearer_token(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_cancel_snapshot_uses_explicit_token_when_env_unset(monkeypatch):
+    """An explicit token must be honored even when BRIGHTDATA_API_TOKEN is unset.
+
+    Defends the wiring: a caller using BrightDataFetcher(token=...) without the
+    env var still cancels upstream — cancel must use the SAME credentials the
+    download used, not silently no-op."""
+    from syft_ingest.sources.brightdata import _cancel_snapshot
+
+    monkeypatch.delenv("BRIGHTDATA_API_TOKEN", raising=False)
+
+    mock_response = MagicMock(spec=httpx.Response)
+    mock_response.raise_for_status = MagicMock()
+    mock_client = AsyncMock()
+    mock_client.post = AsyncMock(return_value=mock_response)
+    mock_client_cls = MagicMock()
+    mock_client_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client_cls.return_value.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("syft_ingest.sources.brightdata.httpx.AsyncClient", mock_client_cls):
+        await _cancel_snapshot("sd_explicit", token="ctor-token")
+
+    mock_client.post.assert_awaited_once_with(
+        "https://api.brightdata.com/datasets/v3/snapshot/sd_explicit/cancel",
+        headers={"Authorization": "Bearer ctor-token"},
+    )
+
+
+@pytest.mark.asyncio
 async def test_cancel_snapshot_http_error_logs_and_returns(monkeypatch):
     """An HTTP error during cancel is logged but does NOT raise — the
     FetchCancelled exception in the poll loop is the contract surface, not
@@ -727,4 +755,4 @@ async def test_initial_download_cancellable_aborts_within_one_chunk(monkeypatch)
                 with pytest.raises(FetchCancelled):
                     await fetcher.fetch_async(req)
 
-    mock_cancel.assert_awaited_once_with("sd_fb_cancel")
+    mock_cancel.assert_awaited_once_with("sd_fb_cancel", token="tkn")

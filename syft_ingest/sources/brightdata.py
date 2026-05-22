@@ -220,16 +220,19 @@ _BRIGHTDATA_CANCEL_URL = (
 )
 
 
-async def _cancel_snapshot(snapshot_id: str) -> None:
+async def _cancel_snapshot(snapshot_id: str, token: str | None = None) -> None:
     """Best-effort cancel of a BrightData snapshot.
 
-    POSTs to BrightData's cancel endpoint with the same Bearer token the SDK
-    uses (env var ``BRIGHTDATA_API_TOKEN``). Logs failures rather than raising:
-    callers see ``FetchCancelled`` as the contract surface, and a 4xx/5xx on
-    the cancel API does not change that — the snapshot may continue running
-    on BrightData's side, but the fetcher has stopped polling it either way.
+    POSTs to BrightData's cancel endpoint. ``token`` is the Bearer credential;
+    when omitted it falls back to ``BRIGHTDATA_API_TOKEN``. Callers that hold an
+    explicit token (e.g. a fetcher constructed with ``token=`` and no env var)
+    must pass it so cancel uses the SAME credentials the download/poll used,
+    rather than silently no-opping. Logs failures rather than raising: callers
+    see ``FetchCancelled`` as the contract surface, and a 4xx/5xx on the cancel
+    API does not change that — the snapshot may continue running on BrightData's
+    side, but the fetcher has stopped polling it either way.
     """
-    token = os.getenv("BRIGHTDATA_API_TOKEN")
+    token = token or os.getenv("BRIGHTDATA_API_TOKEN")
     if not token:
         logger.warning(
             "BRIGHTDATA_API_TOKEN not set; cannot cancel snapshot {sid}",
@@ -366,7 +369,7 @@ async def _download_snapshot_data(
             )
 
     async def _raise_cancelled(where: str) -> None:
-        await _cancel_snapshot(snapshot_id)
+        await _cancel_snapshot(snapshot_id, token=api_token)
         raise FetchCancelled(
             f"Cancellation requested {where} snapshot {snapshot_id}",
             platform=platform_name,
@@ -455,6 +458,7 @@ async def _poll_until_ready(
     timeout: int,
     poll_interval: int,
     platform_name: str,
+    token: str | None = None,
 ) -> None:
     """Poll a BrightData ScrapeJob until it reaches the 'ready' state.
 
@@ -567,7 +571,7 @@ async def _poll_until_ready(
         # over a Remove click — we don't want to cancel a snapshot whose data
         # has already been collected and is one fetch() call away.
         if request.cancel_callback is not None and request.cancel_callback():
-            await _cancel_snapshot(snapshot_id)
+            await _cancel_snapshot(snapshot_id, token=token)
             raise FetchCancelled(
                 f"Cancellation requested for snapshot {snapshot_id}",
                 platform=platform_name,
@@ -784,6 +788,7 @@ class BrightDataFetcher:
                         timeout=timeout,
                         poll_interval=poll_interval,
                         platform_name=platform_name,
+                        token=self._token,
                     )
                     raw_data = await _download_snapshot_data(
                         snapshot_id,
@@ -830,6 +835,7 @@ class BrightDataFetcher:
                         timeout=timeout,
                         poll_interval=poll_interval,
                         platform_name=platform_name,
+                        token=self._token,
                     )
                     logger.debug("Job {job_id} completed", job_id=job.snapshot_id)
 

@@ -427,8 +427,10 @@ class SnapshotNotFoundError(FetchError):
     """A snapshot addressed by id no longer exists upstream.
 
     Raised when re-attaching to a snapshot by id (``download_snapshot``) and
-    the upstream service returns 404 / empty — typically because the
-    snapshot's retention window expired, or the id was never created.
+    the upstream service returns 404 / not-found — typically because the
+    snapshot's retention window expired, or the id was never created. (A
+    snapshot that exists but is genuinely empty downloads fine and surfaces as
+    :class:`FetchEmptyResultError`, not this.)
     Deliberately NOT a :class:`FetchEmptyResultError`: an empty result means
     "the scrape ran and found no posts" (don't re-trigger), whereas a missing
     snapshot means "the data we paid for is gone" (fall back to a fresh
