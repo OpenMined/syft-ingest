@@ -373,58 +373,73 @@ async def _download_snapshot_data(
         )
 
     deadline = time.monotonic() + ready_timeout
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        while True:
-            if cancel_callback is not None and cancel_callback():
-                await _raise_cancelled("before downloading")
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            while True:
+                if cancel_callback is not None and cancel_callback():
+                    await _raise_cancelled("before downloading")
 
-            async with client.stream(
-                "GET", url, headers=headers, params=params
-            ) as response:
-                status_code = response.status_code
+                async with client.stream(
+                    "GET", url, headers=headers, params=params
+                ) as response:
+                    status_code = response.status_code
 
-                if status_code == 200:
-                    _emit("ready")
-                    buffer = bytearray()
-                    async for chunk in response.aiter_bytes(_DOWNLOAD_CHUNK_SIZE):
-                        if cancel_callback is not None and cancel_callback():
-                            await _raise_cancelled("mid-download of")
-                        buffer.extend(chunk)
-                    return _decode_snapshot_payload(buffer, snapshot_id, platform_name)
-
-                if status_code == 404:
-                    raise SnapshotNotFoundError(
-                        f"BrightData snapshot {snapshot_id} not found (404) — "
-                        "likely expired retention or never created",
-                        platform=platform_name,
-                        snapshot_id=snapshot_id,
-                    )
-
-                if status_code == 202:
-                    if not wait_for_ready:
-                        raise FetchTimeoutError(
-                            f"Snapshot {snapshot_id} not ready (HTTP 202) and "
-                            "wait_for_ready is False",
-                            platform=platform_name,
+                    if status_code == 200:
+                        _emit("ready")
+                        buffer = bytearray()
+                        async for chunk in response.aiter_bytes(_DOWNLOAD_CHUNK_SIZE):
+                            if cancel_callback is not None and cancel_callback():
+                                await _raise_cancelled("mid-download of")
+                            buffer.extend(chunk)
+                        return _decode_snapshot_payload(
+                            buffer, snapshot_id, platform_name
                         )
-                    _emit("running")
-                else:
-                    body = (await response.aread()).decode(errors="replace")
-                    raise FetchScrapeFailedError(
-                        f"BrightData snapshot {snapshot_id} download failed "
-                        f"(HTTP {status_code})",
-                        platform=platform_name,
-                        raw_error_message=body[:500],
-                        snapshot_id=snapshot_id,
-                    )
 
-            # Reached only on a 202 while wait_for_ready — back off and re-poll.
-            if time.monotonic() >= deadline:
-                raise FetchTimeoutError(
-                    f"Snapshot {snapshot_id} not ready after {ready_timeout}s",
-                    platform=platform_name,
-                )
-            await asyncio.sleep(poll_interval)
+                    if status_code == 404:
+                        raise SnapshotNotFoundError(
+                            f"BrightData snapshot {snapshot_id} not found (404) — "
+                            "likely expired retention or never created",
+                            platform=platform_name,
+                            snapshot_id=snapshot_id,
+                        )
+
+                    if status_code == 202:
+                        if not wait_for_ready:
+                            raise FetchTimeoutError(
+                                f"Snapshot {snapshot_id} not ready (HTTP 202) and "
+                                "wait_for_ready is False",
+                                platform=platform_name,
+                            )
+                        _emit("running")
+                    else:
+                        body = (await response.aread()).decode(errors="replace")
+                        raise FetchScrapeFailedError(
+                            f"BrightData snapshot {snapshot_id} download failed "
+                            f"(HTTP {status_code})",
+                            platform=platform_name,
+                            raw_error_message=body[:500],
+                            snapshot_id=snapshot_id,
+                        )
+
+                # Reached only on a 202 while wait_for_ready — back off, re-poll.
+                if time.monotonic() >= deadline:
+                    raise FetchTimeoutError(
+                        f"Snapshot {snapshot_id} not ready after {ready_timeout}s",
+                        platform=platform_name,
+                    )
+                await asyncio.sleep(poll_interval)
+    except FetchError:
+        # Our typed errors (cancelled / not-found / timeout / scrape-failed)
+        # ARE the contract surface — let them through unchanged.
+        raise
+    except httpx.HTTPError as e:
+        # Boundary defense: a raw network error must never leak. download_snapshot
+        # (resume) has no outer try/except like fetch_async, so the wrap lives
+        # here so both callers are covered.
+        raise FetchError(
+            f"Network error downloading snapshot {snapshot_id}: {e}",
+            platform=platform_name,
+        ) from e
 
 
 _MAX_TRANSIENT_STATUS_FAILURES = 5

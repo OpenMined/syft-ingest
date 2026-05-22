@@ -14,11 +14,13 @@ from __future__ import annotations
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 from syft_ingest.core.fetcher import (
     FetchAuthError,
     FetchCancelled,
+    FetchError,
     FetchTimeoutError,
     SnapshotNotFoundError,
 )
@@ -162,6 +164,50 @@ async def test_no_token_raises_auth_error(monkeypatch):
     monkeypatch.delenv("BRIGHTDATA_API_TOKEN", raising=False)
     with pytest.raises(FetchAuthError):
         await _download_snapshot_data("sd_x", platform_name="instagram")
+
+
+@pytest.mark.asyncio
+async def test_network_error_mid_stream_wrapped_as_fetch_error(token_env):
+    """A raw httpx error mid-download must NOT leak to callers — it is wrapped
+    in FetchError. This is the boundary defense download_snapshot relies on:
+    unlike fetch_async, the resume path has no outer SDK try/except, so the
+    helper itself must never surface httpx.HTTPError."""
+    resp = MagicMock()
+    resp.status_code = 200
+
+    async def _boom(chunk_size=None):
+        yield b'[{"post_id":"1"}'
+        raise httpx.ReadError("connection reset mid-stream")
+
+    resp.aiter_bytes = _boom
+    resp.aread = AsyncMock(return_value=b"")
+
+    cm = MagicMock()
+    cm.__aenter__ = AsyncMock(return_value=resp)
+    cm.__aexit__ = AsyncMock(return_value=None)
+    client = MagicMock()
+    client.stream = MagicMock(return_value=cm)
+    cls = MagicMock()
+    cls.return_value.__aenter__ = AsyncMock(return_value=client)
+    cls.return_value.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("syft_ingest.sources.brightdata.httpx.AsyncClient", cls):
+        with pytest.raises(FetchError):
+            await _download_snapshot_data("sd_neterr", platform_name="instagram")
+
+
+@pytest.mark.asyncio
+async def test_connect_error_wrapped_as_fetch_error(token_env):
+    """A connect-time httpx error (before any status code) is also wrapped."""
+    client = MagicMock()
+    client.stream = MagicMock(side_effect=httpx.ConnectError("no route"))
+    cls = MagicMock()
+    cls.return_value.__aenter__ = AsyncMock(return_value=client)
+    cls.return_value.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("syft_ingest.sources.brightdata.httpx.AsyncClient", cls):
+        with pytest.raises(FetchError):
+            await _download_snapshot_data("sd_conn", platform_name="facebook")
 
 
 @pytest.mark.asyncio
