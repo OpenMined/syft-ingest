@@ -421,3 +421,32 @@ class FetchCancelled(FetchError):
     (upstream failure). Callers can ``except FetchCancelled`` to finalize a
     cancellation without treating it as an error.
     """
+
+
+class SnapshotNotFoundError(FetchError):
+    """A snapshot addressed by id no longer exists upstream.
+
+    Raised when re-attaching to a snapshot by id (``download_snapshot``) and
+    the upstream service returns 404 / not-found — typically because the
+    snapshot's retention window expired, or the id was never created. (A
+    snapshot that exists but is genuinely empty downloads fine and surfaces as
+    :class:`FetchEmptyResultError`, not this.)
+    Deliberately NOT a :class:`FetchEmptyResultError`: an empty result means
+    "the scrape ran and found no posts" (don't re-trigger), whereas a missing
+    snapshot means "the data we paid for is gone" (fall back to a fresh
+    trigger). Keeping them distinct lets a resuming caller make that call.
+
+    Attributes:
+        snapshot_id: The id that could not be found, when known.
+        platform: Inherited from :class:`FetchError`.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        platform: str | None = None,
+        *,
+        snapshot_id: str | None = None,
+    ) -> None:
+        super().__init__(message, platform=platform)
+        self.snapshot_id = snapshot_id

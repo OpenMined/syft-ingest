@@ -1,4 +1,4 @@
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 from syft_ingest.core.fetcher import (
     AsyncContentFetcher,
@@ -14,6 +14,7 @@ from syft_ingest.core.fetcher import (
     FetchResult,
     FetchScrapeFailedError,
     FetchTimeoutError,
+    SnapshotNotFoundError,
     run_fetcher_async,
     run_fetcher_sync,
 )
@@ -30,6 +31,14 @@ from syft_ingest.core.ingest import (
     UnsupportedBackendError,
     ingest_corpus,
     ingest_jsonl,
+)
+from syft_ingest.core.lifecycle import (
+    SnapshotHandle,
+    attach,
+    cancel,
+    download_snapshot,
+    poll_status,
+    trigger,
 )
 from syft_ingest.core.registry import FetcherKey, get_fetcher, register_fetcher
 from syft_ingest.core.source_specs import SocialProfileSource, SourceSpec
@@ -57,15 +66,22 @@ __all__ = [
     "MissingDependencyError",
     "NoDocumentsError",
     "QdrantDestination",
+    "SnapshotHandle",
+    "SnapshotNotFoundError",
     "SocialProfileSource",
     "SourceSpec",
     "UnsupportedBackendError",
     "async_gather",
+    "attach",
+    "cancel",
+    "download_snapshot",
     "gather",
     "get_fetcher",
     "ingest_corpus",
     "ingest_jsonl",
+    "poll_status",
     "register_fetcher",
     "run_fetcher_async",
     "run_fetcher_sync",
+    "trigger",
 ]

@@ -13,10 +13,11 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import os
 import time
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Callable
 
 import httpx
 from loguru import logger
@@ -31,6 +32,7 @@ from syft_ingest.core.fetcher import (
     FetchResult,
     FetchScrapeFailedError,
     FetchTimeoutError,
+    SnapshotNotFoundError,
 )
 from syft_ingest.core.models import (
     ContentItem,
@@ -57,7 +59,7 @@ _IG_SEARCH_TEXT_FIELDS: tuple[str, ...] = ("description", "caption", "text")
 
 # Import the brightdata SDK
 try:
-    from brightdata import BrightDataClient
+    from brightdata import BrightDataClient, ScrapeJob
     from brightdata.exceptions import (
         APIError,
         AuthenticationError,
@@ -218,16 +220,19 @@ _BRIGHTDATA_CANCEL_URL = (
 )
 
 
-async def _cancel_snapshot(snapshot_id: str) -> None:
+async def _cancel_snapshot(snapshot_id: str, token: str | None = None) -> None:
     """Best-effort cancel of a BrightData snapshot.
 
-    POSTs to BrightData's cancel endpoint with the same Bearer token the SDK
-    uses (env var ``BRIGHTDATA_API_TOKEN``). Logs failures rather than raising:
-    callers see ``FetchCancelled`` as the contract surface, and a 4xx/5xx on
-    the cancel API does not change that — the snapshot may continue running
-    on BrightData's side, but the fetcher has stopped polling it either way.
+    POSTs to BrightData's cancel endpoint. ``token`` is the Bearer credential;
+    when omitted it falls back to ``BRIGHTDATA_API_TOKEN``. Callers that hold an
+    explicit token (e.g. a fetcher constructed with ``token=`` and no env var)
+    must pass it so cancel uses the SAME credentials the download/poll used,
+    rather than silently no-opping. Logs failures rather than raising: callers
+    see ``FetchCancelled`` as the contract surface, and a 4xx/5xx on the cancel
+    API does not change that — the snapshot may continue running on BrightData's
+    side, but the fetcher has stopped polling it either way.
     """
-    token = os.getenv("BRIGHTDATA_API_TOKEN")
+    token = token or os.getenv("BRIGHTDATA_API_TOKEN")
     if not token:
         logger.warning(
             "BRIGHTDATA_API_TOKEN not set; cannot cancel snapshot {sid}",
@@ -251,6 +256,195 @@ async def _cancel_snapshot(snapshot_id: str) -> None:
         )
 
 
+_BRIGHTDATA_SNAPSHOT_URL = (
+    "https://api.brightdata.com/datasets/v3/snapshot/{snapshot_id}"
+)
+_DOWNLOAD_CHUNK_SIZE = 8192
+"""Stream the snapshot body in 8 KiB chunks so the cancel check between chunks
+gives sub-chunk cancel latency without thrashing on tiny reads."""
+_DEFAULT_DOWNLOAD_READY_TIMEOUT = 180
+_DEFAULT_DOWNLOAD_POLL_INTERVAL = 5
+
+
+def _decode_snapshot_payload(
+    buffer: bytearray, snapshot_id: str, platform_name: str
+) -> Any:
+    """Decode an accumulated snapshot body into JSON.
+
+    Empty body → None (the caller's parser maps that to zero items). A
+    non-JSON body is a scrape failure, not a parse-time crash — wrap it in a
+    typed error so callers never see a raw ``json.JSONDecodeError``.
+    """
+    text = bytes(buffer).decode(errors="replace").strip()
+    if not text:
+        return None
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as e:
+        raise FetchScrapeFailedError(
+            f"BrightData snapshot {snapshot_id} returned a non-JSON payload",
+            platform=platform_name,
+            raw_error_message=text[:500],
+            snapshot_id=snapshot_id,
+        ) from e
+
+
+async def _download_snapshot_data(
+    snapshot_id: str,
+    *,
+    platform_name: str,
+    cancel_callback: Callable[[], bool] | None = None,
+    status_callback: Callable[[str, str], None] | None = None,
+    token: str | None = None,
+    request_timeout: float | None = None,
+    wait_for_ready: bool = False,
+    ready_timeout: int = _DEFAULT_DOWNLOAD_READY_TIMEOUT,
+    poll_interval: int = _DEFAULT_DOWNLOAD_POLL_INTERVAL,
+) -> Any:
+    """Stream a snapshot's data by id, cancellable between chunks.
+
+    The single download seam for every BrightData platform (Facebook,
+    Instagram, future X/TikTok) AND for re-attach (``download_snapshot``). The
+    snapshot endpoint ``GET /datasets/v3/snapshot/{id}`` is keyed only by id —
+    platform-agnostic — so adding a new BrightData source needs only its own
+    *trigger*; download + cancel come for free by routing through here.
+
+    The body is streamed in :data:`_DOWNLOAD_CHUNK_SIZE` chunks and
+    ``cancel_callback`` is consulted between chunks, so a cancel aborts within
+    one chunk and best-effort cancels the upstream snapshot. This is the native
+    mid-download cancel the lifecycle work exists to expose.
+
+    Status handling:
+      * 200 → stream + parse JSON (emits ``status_callback`` 'ready').
+      * 202 → snapshot still building. With ``wait_for_ready`` poll until 200
+        (emits 'running', cancel-aware); otherwise raise FetchTimeoutError.
+      * 404 → SnapshotNotFoundError (retention expired / never created).
+      * other → FetchScrapeFailedError.
+
+    Args:
+        snapshot_id: BrightData snapshot id to download.
+        platform_name: For error ``platform`` attribution + parsing downstream.
+        cancel_callback: Optional ``() -> bool`` checked between chunks and
+            before each (wait-)poll attempt.
+        status_callback: Optional ``(snapshot_id, status)`` observability hook.
+        token: API token; falls back to ``BRIGHTDATA_API_TOKEN``.
+        request_timeout: Per-request HTTP timeout; falls back to the module
+            default resolver.
+        wait_for_ready: Poll past 202 until ready (the resume case); when False
+            a 202 is surfaced as FetchTimeoutError.
+        ready_timeout: Total seconds to wait for a 202→200 transition.
+        poll_interval: Seconds between wait-for-ready polls.
+
+    Raises:
+        FetchAuthError: No API token available.
+        FetchCancelled: cancel_callback returned True mid-download or mid-wait.
+        SnapshotNotFoundError: Snapshot id not found upstream (404).
+        FetchTimeoutError: 202 without wait_for_ready, or ready_timeout hit.
+        FetchScrapeFailedError: Unexpected non-2xx download response or
+            non-JSON body.
+    """
+    api_token = token or os.getenv("BRIGHTDATA_API_TOKEN")
+    if not api_token:
+        raise FetchAuthError(
+            f"No Bright Data API token available to download snapshot "
+            f"{snapshot_id}. Set BRIGHTDATA_API_TOKEN or pass token=.",
+            platform=platform_name,
+        )
+
+    url = _BRIGHTDATA_SNAPSHOT_URL.format(snapshot_id=snapshot_id)
+    headers = {"Authorization": f"Bearer {api_token}"}
+    params = {"format": "json"}
+    timeout = (
+        request_timeout if request_timeout is not None else _default_request_timeout()
+    )
+
+    def _emit(status: str) -> None:
+        if status_callback is None:
+            return
+        try:
+            status_callback(snapshot_id, status)
+        except Exception as e:
+            logger.debug(
+                "status_callback raised for {sid}: {err}", sid=snapshot_id, err=e
+            )
+
+    async def _raise_cancelled(where: str) -> None:
+        await _cancel_snapshot(snapshot_id, token=api_token)
+        raise FetchCancelled(
+            f"Cancellation requested {where} snapshot {snapshot_id}",
+            platform=platform_name,
+        )
+
+    deadline = time.monotonic() + ready_timeout
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            while True:
+                if cancel_callback is not None and cancel_callback():
+                    await _raise_cancelled("before downloading")
+
+                async with client.stream(
+                    "GET", url, headers=headers, params=params
+                ) as response:
+                    status_code = response.status_code
+
+                    if status_code == 200:
+                        _emit("ready")
+                        buffer = bytearray()
+                        async for chunk in response.aiter_bytes(_DOWNLOAD_CHUNK_SIZE):
+                            if cancel_callback is not None and cancel_callback():
+                                await _raise_cancelled("mid-download of")
+                            buffer.extend(chunk)
+                        return _decode_snapshot_payload(
+                            buffer, snapshot_id, platform_name
+                        )
+
+                    if status_code == 404:
+                        raise SnapshotNotFoundError(
+                            f"BrightData snapshot {snapshot_id} not found (404) — "
+                            "likely expired retention or never created",
+                            platform=platform_name,
+                            snapshot_id=snapshot_id,
+                        )
+
+                    if status_code == 202:
+                        if not wait_for_ready:
+                            raise FetchTimeoutError(
+                                f"Snapshot {snapshot_id} not ready (HTTP 202) and "
+                                "wait_for_ready is False",
+                                platform=platform_name,
+                            )
+                        _emit("running")
+                    else:
+                        body = (await response.aread()).decode(errors="replace")
+                        raise FetchScrapeFailedError(
+                            f"BrightData snapshot {snapshot_id} download failed "
+                            f"(HTTP {status_code})",
+                            platform=platform_name,
+                            raw_error_message=body[:500],
+                            snapshot_id=snapshot_id,
+                        )
+
+                # Reached only on a 202 while wait_for_ready — back off, re-poll.
+                if time.monotonic() >= deadline:
+                    raise FetchTimeoutError(
+                        f"Snapshot {snapshot_id} not ready after {ready_timeout}s",
+                        platform=platform_name,
+                    )
+                await asyncio.sleep(poll_interval)
+    except FetchError:
+        # Our typed errors (cancelled / not-found / timeout / scrape-failed)
+        # ARE the contract surface — let them through unchanged.
+        raise
+    except httpx.HTTPError as e:
+        # Boundary defense: a raw network error must never leak. download_snapshot
+        # (resume) has no outer try/except like fetch_async, so the wrap lives
+        # here so both callers are covered.
+        raise FetchError(
+            f"Network error downloading snapshot {snapshot_id}: {e}",
+            platform=platform_name,
+        ) from e
+
+
 _MAX_TRANSIENT_STATUS_FAILURES = 5
 """Tolerate up to N consecutive status() failures before giving up. A 30-second
 network hiccup at poll_interval=15s would be 2 misses; 5 gives us margin without
@@ -264,6 +458,7 @@ async def _poll_until_ready(
     timeout: int,
     poll_interval: int,
     platform_name: str,
+    token: str | None = None,
 ) -> None:
     """Poll a BrightData ScrapeJob until it reaches the 'ready' state.
 
@@ -376,7 +571,7 @@ async def _poll_until_ready(
         # over a Remove click — we don't want to cancel a snapshot whose data
         # has already been collected and is one fetch() call away.
         if request.cancel_callback is not None and request.cancel_callback():
-            await _cancel_snapshot(snapshot_id)
+            await _cancel_snapshot(snapshot_id, token=token)
             raise FetchCancelled(
                 f"Cancellation requested for snapshot {snapshot_id}",
                 platform=platform_name,
@@ -550,33 +745,58 @@ class BrightDataFetcher:
                 post_type = request.config.get("post_type")
 
                 if platform_name == "instagram":
-                    # Instagram: use search scraper (supports num_of_posts server-side)
-                    logger.info(
-                        "Searching Instagram posts for {url}",
-                        url=url,
-                    )
-                    search_kwargs: dict[str, Any] = {
-                        "url": url,
-                        "timeout": timeout,
-                    }
+                    # Instagram discovery, split trigger → poll → download so the
+                    # download phase is cancellable mid-stream. The SDK's combined
+                    # search.instagram.posts() blocks through the download with no
+                    # cancel hook; here the trigger is IG-specific (discovery
+                    # payload + dataset id) while poll + download are the universal
+                    # snapshot lifecycle shared with every BrightData platform.
+                    ig = client.search.instagram
+                    # Mirror the SDK's discovery payload (omit None — never send
+                    # empty strings; empty posts_to_not_include is "skip nothing").
+                    discovery_item: dict[str, Any] = {"url": url}
                     if num_of_posts:
-                        search_kwargs["num_of_posts"] = num_of_posts
+                        discovery_item["num_of_posts"] = num_of_posts
                     if sdk_start_date:
-                        search_kwargs["start_date"] = sdk_start_date
+                        discovery_item["start_date"] = sdk_start_date
                     if sdk_end_date:
-                        search_kwargs["end_date"] = sdk_end_date
-                    # Empty list is "no IDs to skip" → omit the kwarg so the SDK
-                    # does not see a meaningless [] payload.
-                    if posts_to_not_include:
-                        search_kwargs["posts_to_not_include"] = posts_to_not_include
+                        discovery_item["end_date"] = sdk_end_date
                     if post_type:
-                        search_kwargs["post_type"] = post_type
-                    result = await client.search.instagram.posts(**search_kwargs)
-                    raw_data = result.data
-                    snapshot_id = result.snapshot_id
-                    logger.debug(
-                        "Instagram search completed: {snap_id}",
-                        snap_id=snapshot_id,
+                        discovery_item["post_type"] = post_type
+                    if posts_to_not_include:
+                        discovery_item["posts_to_not_include"] = posts_to_not_include
+
+                    logger.info("Triggering Instagram discovery for {url}", url=url)
+                    snapshot_id = await ig.api_client.trigger(
+                        payload=[discovery_item],
+                        dataset_id=ig.DATASET_ID_POSTS,
+                        extra_params={"type": "discover_new", "discover_by": "url"},
+                    )
+                    if not snapshot_id:
+                        raise FetchError(
+                            "Instagram discovery trigger returned no snapshot_id",
+                            platform=platform_name,
+                        )
+                    logger.debug("Instagram discovery snapshot: {sid}", sid=snapshot_id)
+
+                    job = ScrapeJob(
+                        snapshot_id, ig.api_client, platform_name="instagram"
+                    )
+                    await _poll_until_ready(
+                        job,
+                        request=request,
+                        timeout=timeout,
+                        poll_interval=poll_interval,
+                        platform_name=platform_name,
+                        token=self._token,
+                    )
+                    raw_data = await _download_snapshot_data(
+                        snapshot_id,
+                        platform_name=platform_name,
+                        cancel_callback=request.cancel_callback,
+                        status_callback=request.status_callback,
+                        token=self._token,
+                        request_timeout=self._request_timeout,
                     )
 
                 elif platform_name == "facebook":
@@ -615,11 +835,22 @@ class BrightDataFetcher:
                         timeout=timeout,
                         poll_interval=poll_interval,
                         platform_name=platform_name,
+                        token=self._token,
                     )
                     logger.debug("Job {job_id} completed", job_id=job.snapshot_id)
 
-                    raw_data = await job.fetch()
+                    # Download via the shared, cancellable snapshot seam instead
+                    # of the SDK's job.fetch() (a single blocking await) so the
+                    # initial Facebook download is cancellable mid-stream too.
                     snapshot_id = job.snapshot_id
+                    raw_data = await _download_snapshot_data(
+                        snapshot_id,
+                        platform_name=platform_name,
+                        cancel_callback=request.cancel_callback,
+                        status_callback=request.status_callback,
+                        token=self._token,
+                        request_timeout=self._request_timeout,
+                    )
                     logger.debug(
                         "Fetched {bytes} bytes from job", bytes=len(str(raw_data))
                     )

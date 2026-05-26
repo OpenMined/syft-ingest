@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -19,6 +19,20 @@ from syft_ingest.core.models import (
 from syft_ingest.core.registry import get_fetcher, reset_registry
 from syft_ingest.core.url_router import Platform
 from syft_ingest.sources.brightdata import BrightDataFetcher
+
+
+def _make_ig(mock_client, sid="snap-ig"):
+    """Wire ``mock_client.search.instagram`` for the trigger/poll/download path.
+
+    The trigger only returns a snapshot id now; pair every use with a patch of
+    ``_download_snapshot_data`` (the seam that carries the raw post data).
+    """
+    ig = MagicMock()
+    ig.DATASET_ID_POSTS = "gd_posts"
+    ig.api_client.trigger = AsyncMock(return_value=sid)
+    ig.api_client.get_status = AsyncMock(return_value="ready")
+    mock_client.search.instagram = ig
+    return ig
 
 
 @pytest.fixture(autouse=True)
@@ -155,8 +169,6 @@ async def test_end_to_end_instagram_fetch(
     brightdata_fetcher, mock_instagram_profile_response
 ):
     """End-to-end Instagram fetch with registry dispatch and parsing (search scraper path)."""
-    from unittest.mock import MagicMock
-
     request = FetchRequest(
         platform=Platform.INSTAGRAM,
         extractor="brightdata",
@@ -164,19 +176,17 @@ async def test_end_to_end_instagram_fetch(
         config={"timeout": 30},
     )
 
-    mock_result = MagicMock()
-    mock_result.snapshot_id = "snap-ig-e2e"
-    mock_result.data = mock_instagram_profile_response
-
     mock_client = AsyncMock()
-    mock_search_ig = AsyncMock()
-    mock_search_ig.posts = AsyncMock(return_value=mock_result)
-    mock_client.search.instagram = mock_search_ig
+    _make_ig(mock_client, sid="snap-ig-e2e")
 
     with patch("syft_ingest.sources.brightdata.BrightDataClient") as mock_client_class:
         mock_client_class.return_value.__aenter__.return_value = mock_client
 
-        result = await brightdata_fetcher.fetch_async(request)
+        with patch(
+            "syft_ingest.sources.brightdata._download_snapshot_data",
+            AsyncMock(return_value=mock_instagram_profile_response),
+        ):
+            result = await brightdata_fetcher.fetch_async(request)
 
         assert result.remote_job_id == "snap-ig-e2e"
         assert result.remote_status == "ready"
@@ -204,7 +214,6 @@ async def test_end_to_end_facebook_fetch(
     mock_job = AsyncMock()
     mock_job.snapshot_id = "job-fb-e2e"
     mock_job.status = AsyncMock(return_value="ready")
-    mock_job.fetch = AsyncMock(return_value=mock_facebook_posts_response)
 
     mock_client = AsyncMock()
     mock_scraper = AsyncMock()
@@ -214,7 +223,11 @@ async def test_end_to_end_facebook_fetch(
     with patch("syft_ingest.sources.brightdata.BrightDataClient") as mock_client_class:
         mock_client_class.return_value.__aenter__.return_value = mock_client
 
-        result = await brightdata_fetcher.fetch_async(request)
+        with patch(
+            "syft_ingest.sources.brightdata._download_snapshot_data",
+            AsyncMock(return_value=mock_facebook_posts_response),
+        ):
+            result = await brightdata_fetcher.fetch_async(request)
 
         assert result.remote_job_id == "job-fb-e2e"
         assert result.remote_status == "ready"
@@ -230,9 +243,7 @@ async def test_end_to_end_facebook_fetch(
 async def test_end_to_end_with_timeout_config(
     brightdata_fetcher, mock_instagram_profile_response
 ):
-    """Timeout config from request is passed through to search.instagram.posts()."""
-    from unittest.mock import MagicMock
-
+    """Timeout config from request flows through to the poll helper."""
     request = FetchRequest(
         platform=Platform.INSTAGRAM,
         extractor="brightdata",
@@ -240,50 +251,49 @@ async def test_end_to_end_with_timeout_config(
         config={"timeout": 5, "poll_interval": 1},
     )
 
-    mock_result = MagicMock()
-    mock_result.snapshot_id = "snap-timeout"
-    mock_result.data = mock_instagram_profile_response
-
     mock_client = AsyncMock()
-    mock_search_ig = AsyncMock()
-    mock_search_ig.posts = AsyncMock(return_value=mock_result)
-    mock_client.search.instagram = mock_search_ig
+    _make_ig(mock_client, sid="snap-timeout")
 
     with patch("syft_ingest.sources.brightdata.BrightDataClient") as mock_client_class:
         mock_client_class.return_value.__aenter__.return_value = mock_client
 
-        await brightdata_fetcher.fetch_async(request)
+        # The custom timeout (5s) now flows to _poll_until_ready, not the SDK's
+        # combined posts() call; patch it to capture the awaited kwarg.
+        with patch(
+            "syft_ingest.sources.brightdata._poll_until_ready", AsyncMock()
+        ) as mock_poll:
+            with patch(
+                "syft_ingest.sources.brightdata._download_snapshot_data",
+                AsyncMock(return_value=mock_instagram_profile_response),
+            ):
+                await brightdata_fetcher.fetch_async(request)
 
-        # Verify search was called with the custom timeout
-        call_kwargs = mock_search_ig.posts.call_args[1]
-        assert call_kwargs["timeout"] == 5
+        # Verify the custom timeout was passed to the poll helper.
+        mock_poll.assert_awaited_once()
+        assert mock_poll.await_args.kwargs["timeout"] == 5
 
 
 @pytest.mark.asyncio
 async def test_end_to_end_empty_result_error(brightdata_fetcher):
-    """Empty result from search raises FetchEmptyResultError."""
-    from unittest.mock import MagicMock
-
+    """Empty download result raises FetchEmptyResultError."""
     request = FetchRequest(
         platform=Platform.INSTAGRAM,
         extractor="brightdata",
         urls=["https://instagram.com/test"],
     )
 
-    mock_result = MagicMock()
-    mock_result.snapshot_id = "snap-empty"
-    mock_result.data = []  # Empty list → no items parsed
-
     mock_client = AsyncMock()
-    mock_search_ig = AsyncMock()
-    mock_search_ig.posts = AsyncMock(return_value=mock_result)
-    mock_client.search.instagram = mock_search_ig
+    _make_ig(mock_client, sid="snap-empty")
 
     with patch("syft_ingest.sources.brightdata.BrightDataClient") as mock_client_class:
         mock_client_class.return_value.__aenter__.return_value = mock_client
 
-        with pytest.raises(FetchEmptyResultError):
-            await brightdata_fetcher.fetch_async(request)
+        with patch(
+            "syft_ingest.sources.brightdata._download_snapshot_data",
+            AsyncMock(return_value=[]),  # Empty list → no items parsed
+        ):
+            with pytest.raises(FetchEmptyResultError):
+                await brightdata_fetcher.fetch_async(request)
 
 
 @pytest.mark.asyncio
@@ -318,7 +328,6 @@ async def test_end_to_end_facebook_video_fetch(
     mock_job = AsyncMock()
     mock_job.snapshot_id = "job-fb-video"
     mock_job.status = AsyncMock(return_value="ready")
-    mock_job.fetch = AsyncMock(return_value=mock_facebook_video_response)
 
     mock_client = AsyncMock()
     mock_scraper = AsyncMock()
@@ -328,7 +337,11 @@ async def test_end_to_end_facebook_video_fetch(
     with patch("syft_ingest.sources.brightdata.BrightDataClient") as mock_client_class:
         mock_client_class.return_value.__aenter__.return_value = mock_client
 
-        result = await brightdata_fetcher.fetch_async(request)
+        with patch(
+            "syft_ingest.sources.brightdata._download_snapshot_data",
+            AsyncMock(return_value=mock_facebook_video_response),
+        ):
+            result = await brightdata_fetcher.fetch_async(request)
 
         assert len(result.items) == 1
         assert isinstance(result.items[0], ContentItem)
@@ -341,27 +354,23 @@ async def test_end_to_end_facebook_video_fetch(
 
 def test_end_to_end_sync_fetch(brightdata_fetcher, mock_instagram_profile_response):
     """Sync bridge run_fetcher_sync() works end-to-end with BrightDataFetcher (search path)."""
-    from unittest.mock import MagicMock
-
     request = FetchRequest(
         platform=Platform.INSTAGRAM,
         extractor="brightdata",
         urls=["https://instagram.com/test"],
     )
 
-    mock_result = MagicMock()
-    mock_result.snapshot_id = "snap-sync"
-    mock_result.data = mock_instagram_profile_response
-
     mock_client = AsyncMock()
-    mock_search_ig = AsyncMock()
-    mock_search_ig.posts = AsyncMock(return_value=mock_result)
-    mock_client.search.instagram = mock_search_ig
+    _make_ig(mock_client, sid="snap-sync")
 
     with patch("syft_ingest.sources.brightdata.BrightDataClient") as mock_client_class:
         mock_client_class.return_value.__aenter__.return_value = mock_client
 
-        result = run_fetcher_sync(brightdata_fetcher, request)
+        with patch(
+            "syft_ingest.sources.brightdata._download_snapshot_data",
+            AsyncMock(return_value=mock_instagram_profile_response),
+        ):
+            result = run_fetcher_sync(brightdata_fetcher, request)
 
         assert result.remote_status == "ready"
         assert len(result.items) == 1
